@@ -161,6 +161,27 @@ class LedgerEntry(Base):
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
+class InvoiceSettlement(Base):
+    __tablename__ = "invoice_settlements"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "module_id", "payment_reference", name="uq_settlement_payment_reference"),
+        Index("ix_settlement_owner_invoice", "owner_id", "invoice_record_id"),
+        CheckConstraint("module_id IN ('ap', 'ar')", name="ck_settlement_module"),
+        CheckConstraint("amount_minor > 0", name="ck_settlement_amount"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    invoice_record_id = Column(Integer, ForeignKey("module_records.id", ondelete="RESTRICT"), nullable=False)
+    module_id = Column(String(40), nullable=False)
+    payment_reference = Column(String(100), nullable=False)
+    posting_date = Column(Date, nullable=False)
+    amount_minor = Column(BigInteger, nullable=False)
+    cash_account_code = Column(String(40), nullable=False)
+    cash_account_name = Column(String(160), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
 class FiscalPeriod(Base):
     __tablename__ = "fiscal_periods"
     __table_args__ = (
@@ -365,6 +386,37 @@ class LedgerLineOut(BaseModel):
     description: str
     debit_minor: int
     credit_minor: int
+
+
+class InvoicePaymentCreate(BaseModel):
+    payment_reference: str = Field(min_length=1, max_length=100)
+    posting_date: date
+    amount: Decimal = Field(gt=0)
+    cash_account_code: str = Field(min_length=1, max_length=40)
+
+    @field_validator("payment_reference", "cash_account_code", mode="before")
+    @classmethod
+    def strip_fields(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class InvoicePaymentOut(BaseModel):
+    id: int
+    payment_reference: str
+    posting_date: date
+    amount_minor: int
+    cash_account_code: str
+    cash_account_name: str
+
+
+class InvoiceSettlementOut(BaseModel):
+    invoice_record_id: int
+    module_id: str
+    invoice_total_minor: int
+    paid_minor: int
+    outstanding_minor: int
+    settlement_status: Literal["Unpaid", "Partially Paid", "Paid"]
+    payments: list[InvoicePaymentOut]
 
 
 class BudgetVarianceOut(BaseModel):
@@ -808,6 +860,67 @@ def write_ledger_entries(
                 credit_minor=int(line["credit_minor"]),
             )
         )
+
+
+def invoice_total_minor(record: ModuleRecord) -> int:
+    amount_minor = amount_to_minor(record.data.get("amount"))
+    tax_minor = record.data.get("tax_amount_minor")
+    if not isinstance(tax_minor, int) or tax_minor < 0:
+        tax_minor, _ = calculate_invoice_tax(record.data, amount_minor)
+    return amount_minor + tax_minor
+
+
+def serialize_invoice_settlements(
+    db: Session,
+    owner_id: int,
+    module_id: str,
+    invoices: list[ModuleRecord],
+) -> list[InvoiceSettlementOut]:
+    if not invoices:
+        return []
+    invoice_ids = [invoice.id for invoice in invoices]
+    payments = db.scalars(
+        select(InvoiceSettlement)
+        .where(
+            InvoiceSettlement.owner_id == owner_id,
+            InvoiceSettlement.module_id == module_id,
+            InvoiceSettlement.invoice_record_id.in_(invoice_ids),
+        )
+        .order_by(InvoiceSettlement.posting_date, InvoiceSettlement.id)
+    ).all()
+    by_invoice: dict[int, list[InvoiceSettlement]] = {invoice_id: [] for invoice_id in invoice_ids}
+    for payment in payments:
+        by_invoice[payment.invoice_record_id].append(payment)
+
+    output = []
+    for invoice in invoices:
+        invoice_payments = by_invoice[invoice.id]
+        invoice_total = invoice_total_minor(invoice)
+        paid = sum(payment.amount_minor for payment in invoice_payments)
+        output.append(
+            InvoiceSettlementOut(
+                invoice_record_id=invoice.id,
+                module_id=module_id,
+                invoice_total_minor=invoice_total,
+                paid_minor=paid,
+                outstanding_minor=max(invoice_total - paid, 0),
+                settlement_status=(
+                    "Paid" if paid >= invoice_total else "Partially Paid" if paid else "Unpaid"
+                ),
+                payments=[
+                    InvoicePaymentOut(
+                        id=payment.id,
+                        payment_reference=payment.payment_reference,
+                        posting_date=payment.posting_date,
+                        amount_minor=payment.amount_minor,
+                        cash_account_code=payment.cash_account_code,
+                        cash_account_name=payment.cash_account_name,
+                    )
+                    for payment in invoice_payments
+                ],
+            )
+        )
+    return output
 
 
 def get_trial_balance(
@@ -1270,6 +1383,154 @@ def post_accounting_record(
         raise HTTPException(status_code=409, detail="This source record already has ledger entries.") from error
     db.refresh(record)
     return record
+
+
+@app.get("/api/modules/{module_id}/settlements", response_model=list[InvoiceSettlementOut])
+def list_invoice_settlements(
+    module_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if module_id not in {"ap", "ar"}:
+        raise HTTPException(status_code=404, detail="Settlement summaries are available for AP and AR invoices.")
+    invoices = db.scalars(
+        select(ModuleRecord)
+        .where(
+            ModuleRecord.owner_id == user.id,
+            ModuleRecord.module_id == module_id,
+            ModuleRecord.status == "Posted",
+        )
+        .order_by(ModuleRecord.updated_at.desc(), ModuleRecord.id.desc())
+    ).all()
+    return serialize_invoice_settlements(db, user.id, module_id, invoices)
+
+
+@app.post(
+    "/api/modules/{module_id}/records/{record_id}/payments",
+    response_model=InvoiceSettlementOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def record_invoice_payment(
+    module_id: str,
+    record_id: int,
+    payload: InvoicePaymentCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if module_id not in {"ap", "ar"}:
+        raise HTTPException(status_code=404, detail="Payments and receipts are available for AP and AR invoices.")
+    invoice = db.scalar(
+        select(ModuleRecord)
+        .where(
+            ModuleRecord.id == record_id,
+            ModuleRecord.owner_id == user.id,
+            ModuleRecord.module_id == module_id,
+        )
+        .with_for_update()
+    )
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found.")
+    if invoice.status != "Posted":
+        raise HTTPException(status_code=409, detail="Post the invoice before recording a payment or receipt.")
+    if not payload.payment_reference:
+        raise HTTPException(status_code=422, detail="A payment or receipt reference is required.")
+    existing_reference = db.scalar(
+        select(InvoiceSettlement.id).where(
+            InvoiceSettlement.owner_id == user.id,
+            InvoiceSettlement.module_id == module_id,
+            InvoiceSettlement.payment_reference == payload.payment_reference,
+        ).limit(1)
+    )
+    if existing_reference:
+        raise HTTPException(status_code=409, detail="This payment reference has already been used.")
+
+    invoice_date = parse_posting_date(invoice.data.get("invoice_date"))
+    if payload.posting_date < invoice_date:
+        raise HTTPException(status_code=422, detail="Payment date cannot be before the invoice date.")
+    amount_minor = amount_to_minor(payload.amount)
+    if amount_minor <= 0:
+        raise HTTPException(status_code=422, detail="Payment or receipt amount must be greater than zero.")
+    invoice_total = invoice_total_minor(invoice)
+    paid_minor = int(
+        db.scalar(
+            select(func.coalesce(func.sum(InvoiceSettlement.amount_minor), 0)).where(
+                InvoiceSettlement.owner_id == user.id,
+                InvoiceSettlement.module_id == module_id,
+                InvoiceSettlement.invoice_record_id == invoice.id,
+            )
+        )
+        or 0
+    )
+    outstanding_minor = invoice_total - paid_minor
+    if amount_minor > outstanding_minor:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Amount exceeds the outstanding balance of {outstanding_minor} paise.",
+        )
+
+    account_type = "Liability" if module_id == "ap" else "Asset"
+    control_account = require_account(
+        get_accounts_by_code(db, user.id),
+        invoice.data.get("control_account_code"),
+        {account_type},
+    )
+    cash_account = require_account(
+        get_accounts_by_code(db, user.id),
+        payload.cash_account_code,
+        {"Asset"},
+    )
+    if cash_account.id == control_account.id:
+        raise HTTPException(status_code=422, detail="Select a cash or bank account different from the invoice control account.")
+    require_open_period(db, payload.posting_date)
+
+    payment = InvoiceSettlement(
+        owner_id=user.id,
+        invoice_record_id=invoice.id,
+        module_id=module_id,
+        payment_reference=payload.payment_reference,
+        posting_date=payload.posting_date,
+        amount_minor=amount_minor,
+        cash_account_code=str(cash_account.data["account_code"]).upper(),
+        cash_account_name=cash_account.name,
+    )
+    db.add(payment)
+    try:
+        db.flush()
+        if module_id == "ap":
+            ledger_lines = [
+                (control_account, amount_minor, 0, f"Payment for {invoice.name}"),
+                (cash_account, 0, amount_minor, f"Payment {payload.payment_reference}"),
+            ]
+            source_module = "ap-payment"
+        else:
+            ledger_lines = [
+                (cash_account, amount_minor, 0, f"Receipt {payload.payment_reference}"),
+                (control_account, 0, amount_minor, f"Receipt for {invoice.name}"),
+            ]
+            source_module = "ar-receipt"
+        for line_number, (account, debit_minor, credit_minor, description) in enumerate(ledger_lines, start=1):
+            db.add(
+                LedgerEntry(
+                    owner_id=user.id,
+                    source_module=source_module,
+                    source_record_id=payment.id,
+                    line_number=line_number,
+                    account_code=str(account.data["account_code"]).upper(),
+                    account_name=account.name,
+                    account_type=str(account.data["account_type"]),
+                    posting_date=payload.posting_date,
+                    document_no=payload.payment_reference,
+                    description=description,
+                    debit_minor=debit_minor,
+                    credit_minor=credit_minor,
+                )
+            )
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This payment reference was already recorded.") from error
+    db.refresh(invoice)
+    return serialize_invoice_settlements(db, user.id, module_id, [invoice])[0]
 
 
 @app.post("/api/modules/fixed-assets/records/{record_id}/post-acquisition", response_model=ModuleRecordOut)
@@ -1777,6 +2038,8 @@ def dashboard_summary(
         "journal-entry": "Journal Entry",
         "ap": "Accounts Payable",
         "ar": "Accounts Receivable",
+        "ap-payment": "Supplier Payment",
+        "ar-receipt": "Customer Receipt",
         "fixed-assets": "Fixed Assets",
     }
     recent_transactions = [

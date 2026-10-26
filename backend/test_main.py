@@ -410,6 +410,189 @@ def test_gst_invoice_posting_and_summary_use_configured_tax_lines(test_client):
     assert all(row["taxable_minor"] == 100000 for row in summary)
 
 
+def test_ap_payment_and_ar_receipt_post_partial_balanced_ledger_entries(test_client):
+    activate_test_year(test_client)
+    create_account(test_client, "5000", "Office expense", "Expense")
+    create_account(test_client, "2100", "Accounts payable", "Liability")
+    create_account(test_client, "4000", "Sales", "Income")
+    create_account(test_client, "1100", "Accounts receivable", "Asset")
+    create_account(test_client, "1000", "Bank", "Asset")
+    ap = test_client.post(
+        "/api/modules/ap/records",
+        json={
+            "name": "Supplier invoice to settle",
+            "data": {
+                "invoice_no": "AP-SETTLE-1",
+                "invoice_date": "2026-04-10",
+                "amount": 100,
+                "account_code": "5000",
+                "control_account_code": "2100",
+            },
+        },
+    ).json()
+    ar = test_client.post(
+        "/api/modules/ar/records",
+        json={
+            "name": "Customer invoice to collect",
+            "data": {
+                "invoice_no": "AR-SETTLE-1",
+                "invoice_date": "2026-04-10",
+                "amount": 200,
+                "account_code": "4000",
+                "control_account_code": "1100",
+            },
+        },
+    ).json()
+    assert test_client.post(f"/api/modules/ap/records/{ap['id']}/post").status_code == 200
+    assert test_client.post(f"/api/modules/ar/records/{ar['id']}/post").status_code == 200
+
+    first_payment = test_client.post(
+        f"/api/modules/ap/records/{ap['id']}/payments",
+        json={
+            "payment_reference": "BANK-OUT-1",
+            "posting_date": "2026-04-15",
+            "amount": 40,
+            "cash_account_code": "1000",
+        },
+    )
+    assert first_payment.status_code == 201
+    assert first_payment.json()["settlement_status"] == "Partially Paid"
+    assert first_payment.json()["paid_minor"] == 4000
+    assert first_payment.json()["outstanding_minor"] == 6000
+
+    second_payment = test_client.post(
+        f"/api/modules/ap/records/{ap['id']}/payments",
+        json={
+            "payment_reference": "BANK-OUT-2",
+            "posting_date": "2026-04-16",
+            "amount": 60,
+            "cash_account_code": "1000",
+        },
+    )
+    assert second_payment.status_code == 201
+    assert second_payment.json()["settlement_status"] == "Paid"
+    assert second_payment.json()["outstanding_minor"] == 0
+    assert test_client.post(
+        f"/api/modules/ap/records/{ap['id']}/payments",
+        json={
+            "payment_reference": "BANK-OUT-OVER",
+            "posting_date": "2026-04-16",
+            "amount": 1,
+            "cash_account_code": "1000",
+        },
+    ).status_code == 422
+    assert test_client.post(
+        f"/api/modules/ap/records/{ap['id']}/payments",
+        json={
+            "payment_reference": "BANK-OUT-1",
+            "posting_date": "2026-04-16",
+            "amount": 1,
+            "cash_account_code": "1000",
+        },
+    ).status_code == 409
+
+    receipt = test_client.post(
+        f"/api/modules/ar/records/{ar['id']}/payments",
+        json={
+            "payment_reference": "BANK-IN-1",
+            "posting_date": "2026-04-17",
+            "amount": 75,
+            "cash_account_code": "1000",
+        },
+    )
+    assert receipt.status_code == 201
+    assert receipt.json()["settlement_status"] == "Partially Paid"
+    assert receipt.json()["outstanding_minor"] == 12500
+    assert test_client.post(
+        f"/api/modules/ar/records/{ar['id']}/payments",
+        json={
+            "payment_reference": "BANK-IN-SAME-ACCOUNT",
+            "posting_date": "2026-04-17",
+            "amount": 1,
+            "cash_account_code": "1100",
+        },
+    ).status_code == 422
+
+    with TestClient(main.app) as other_user:
+        registration = other_user.post(
+            "/api/auth/register",
+            json={
+                "email": "settlement-other@example.com",
+                "display_name": "Other User",
+                "password": "another-secure-password",
+            },
+        )
+        assert registration.status_code == 201
+        assert other_user.get("/api/modules/ap/settlements").json() == []
+        assert other_user.post(
+            f"/api/modules/ap/records/{ap['id']}/payments",
+            json={
+                "payment_reference": "OTHER-USER-PAYMENT",
+                "posting_date": "2026-04-18",
+                "amount": 1,
+                "cash_account_code": "1000",
+            },
+        ).status_code == 404
+
+    ledger = test_client.get("/api/accounting/general-ledger").json()
+    ap_payment = [entry for entry in ledger if entry["source_module"] == "ap-payment"]
+    ar_receipt = [entry for entry in ledger if entry["source_module"] == "ar-receipt"]
+    assert sum(entry["debit_minor"] for entry in ap_payment) == 10000
+    assert sum(entry["credit_minor"] for entry in ap_payment) == 10000
+    assert sum(entry["debit_minor"] for entry in ar_receipt) == 7500
+    assert sum(entry["credit_minor"] for entry in ar_receipt) == 7500
+    tb = test_client.get(
+        "/api/accounting/trial-balance?start_date=2026-04-01&end_date=2026-04-30"
+    ).json()
+    assert tb["balanced"] is True
+    assert tb["total_debit_minor"] == 22500
+    assert tb["total_credit_minor"] == 22500
+
+
+def test_invoice_payment_requires_posted_invoice_active_cash_account_and_open_period(test_client):
+    activate_test_year(test_client)
+    create_account(test_client, "5000", "Office expense", "Expense")
+    create_account(test_client, "2100", "Accounts payable", "Liability")
+    create_account(test_client, "1000", "Bank", "Asset")
+    invoice = test_client.post(
+        "/api/modules/ap/records",
+        json={
+            "name": "Unposted supplier invoice",
+            "data": {
+                "invoice_no": "AP-UNPOSTED",
+                "invoice_date": "2026-04-10",
+                "amount": 20,
+                "account_code": "5000",
+                "control_account_code": "2100",
+            },
+        },
+    ).json()
+    payment_payload = {
+        "payment_reference": "BANK-UNPOSTED",
+        "posting_date": "2026-04-15",
+        "amount": 20,
+        "cash_account_code": "1000",
+    }
+    assert test_client.post(
+        f"/api/modules/ap/records/{invoice['id']}/payments",
+        json=payment_payload,
+    ).status_code == 409
+
+    assert test_client.post(f"/api/modules/ap/records/{invoice['id']}/post").status_code == 200
+    assert test_client.post(f"/api/modules/ap/records/{invoice['id']}/payments", json={
+        **payment_payload,
+        "payment_reference": "BANK-WRONG-ACCOUNT",
+        "cash_account_code": "5000",
+    }).status_code == 422
+    periods = test_client.get("/api/fiscal-periods").json()
+    april = next(period for period in periods if period["start_date"] == "2026-04-01")
+    assert test_client.post(f"/api/fiscal-periods/{april['id']}/close").status_code == 200
+    assert test_client.post(f"/api/modules/ap/records/{invoice['id']}/payments", json={
+        **payment_payload,
+        "payment_reference": "BANK-CLOSED-PERIOD",
+    }).status_code == 409
+
+
 def test_budget_variance_and_financial_statements_use_posted_entries(test_client):
     activate_test_year(test_client)
     create_account(test_client, "5000", "Office expense", "Expense")

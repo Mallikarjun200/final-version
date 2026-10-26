@@ -29,6 +29,13 @@
 .wb-prerequisite b { font-size: 11px; }
 .wb-prerequisite span { font-size: 10.5px; line-height: 1.4; }
 .wb-prerequisite button { flex: 0 0 auto; border: 1px solid #dce3f2; border-radius: 8px; padding: 7px 10px; color: #435fd4; background: #fff; cursor: pointer; font-size: 10px; font-weight: 700; }
+.wb-payment-context { display: grid; gap: 5px; padding: 12px; border: 1px solid #dce3f2; border-radius: 9px; background: #f6f8fd; }
+.wb-payment-context b { color: #25304f; font-size: 12px; }
+.wb-payment-context span { color: #435fd4; font-size: 11px; font-weight: 700; }
+.wb-payment-context small { color: #78839a; font-size: 10px; line-height: 1.45; }
+.wb-settlement-history { display: grid; gap: 4px; min-width: 150px; margin-top: 5px; white-space: normal; }
+.wb-settlement-history summary { color: #596bd0; cursor: pointer; font-size: 10px; }
+.wb-settlement-history span { color: #78839a; font-size: 10px; }
 .wb-modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(25,35,66,.42); }
 .wb-modal { width: min(100%, 620px); max-height: min(90vh, 820px); overflow-y: auto; border-radius: 18px; background: #fff; box-shadow: 0 24px 80px rgba(17,29,68,.25); }
 .wb-modal > header { display: flex; justify-content: space-between; align-items: start; padding: 20px 22px; border-bottom: 1px solid #edf0f6; }

@@ -142,6 +142,11 @@ function initialData(moduleId, fields) {
   return data
 }
 
+function localDateValue() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+
 export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
   const module = ficoNav.find((item) => item.id === moduleId)
   const fields = moduleFields[moduleId] || []
@@ -158,6 +163,9 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
   const [notice, setNotice] = useState('')
   const [accounts, setAccounts] = useState([])
   const [gstRates, setGstRates] = useState([])
+  const [settlements, setSettlements] = useState({})
+  const [paymentRecord, setPaymentRecord] = useState(null)
+  const [paymentForm, setPaymentForm] = useState({ payment_reference: '', posting_date: localDateValue(), amount: '', cash_account_code: '' })
   const [refreshCount, setRefreshCount] = useState(0)
   const postingModule = ['journal-entry', 'ap', 'ar'].includes(moduleId)
   const invoiceModule = ['ap', 'ar'].includes(moduleId)
@@ -191,6 +199,11 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
     if (invoiceModule) {
       apiRequest('/api/modules/gst/records')
         .then((items) => { if (!cancelled) setGstRates(items) })
+        .catch((requestError) => { if (!cancelled) setError(requestError.message) })
+      apiRequest(`/api/modules/${moduleId}/settlements`)
+        .then((items) => {
+          if (!cancelled) setSettlements(Object.fromEntries(items.map((item) => [item.invoice_record_id, item])))
+        })
         .catch((requestError) => { if (!cancelled) setError(requestError.message) })
     }
     return () => { cancelled = true }
@@ -329,7 +342,51 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
     try {
       const posted = await apiRequest(`/api/modules/${moduleId}/records/${record.id}/post`, { method: 'POST' })
       setRecords((current) => current.map((item) => item.id === posted.id ? posted : item))
+      setRefreshCount((count) => count + 1)
       setNotice(`${posted.name} posted to the general ledger.`)
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function startPayment(record) {
+    setPaymentRecord(record)
+    setPaymentForm({
+      payment_reference: '',
+      posting_date: localDateValue(),
+      amount: '',
+      cash_account_code: '',
+    })
+    setError('')
+    setNotice('')
+  }
+
+  async function savePayment(event) {
+    event.preventDefault()
+    if (!paymentRecord) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const settlement = await apiRequest(
+        `/api/modules/${moduleId}/records/${paymentRecord.id}/payments`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ...paymentForm,
+            amount: Number(paymentForm.amount),
+          }),
+        },
+      )
+      setSettlements((current) => ({ ...current, [settlement.invoice_record_id]: settlement }))
+      setPaymentRecord(null)
+      setNotice(
+        moduleId === 'ap'
+          ? `Payment recorded. Remaining supplier balance: ${new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(settlement.outstanding_minor / 100)}.`
+          : `Receipt recorded. Remaining customer balance: ${new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(settlement.outstanding_minor / 100)}.`,
+      )
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -393,7 +450,7 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
         {loading ? <div className="wb-empty">Loading records…</div> : (
           <div className="wb-table-scroll">
             <table className="wb-table">
-              <thead><tr><th>Name</th>{tableFields.map((field) => <th key={field.key}>{field.label}</th>)}<th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Name</th>{tableFields.map((field) => <th key={field.key}>{field.label}</th>)}{invoiceModule && <><th>Paid</th><th>Outstanding</th><th>Settlement</th></>}<th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
               <tbody>
                 {filteredRecords.map((record) => (
                   <tr key={record.id}>
@@ -409,18 +466,40 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
                             : value
                       return <td key={field.key}>{displayValue}</td>
                     })}
+                    {invoiceModule && (() => {
+                      const settlement = settlements[record.id]
+                      const invoiceTotal = settlement?.invoice_total_minor ?? Number(record.data.amount || 0) * 100 + Number(record.data.tax_amount_minor || 0)
+                      return <>
+                        <td>{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format((settlement?.paid_minor || 0) / 100)}</td>
+                        <td>{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format((settlement?.outstanding_minor ?? invoiceTotal) / 100)}</td>
+                        <td>
+                          <b>{settlement?.settlement_status || (record.status === 'Posted' ? 'Unpaid' : 'Not posted')}</b>
+                          {settlement?.payments.length > 0 && (
+                            <details className="wb-settlement-history">
+                              <summary>{settlement.payments.length} transaction{settlement.payments.length === 1 ? '' : 's'}</summary>
+                              {settlement.payments.map((payment) => (
+                                <span key={payment.id}>{payment.payment_reference} · {new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(payment.amount_minor / 100)} · {payment.posting_date}</span>
+                              ))}
+                            </details>
+                          )}
+                        </td>
+                      </>
+                    })()}
                     <td><span className="wb-status">{record.status}</span></td>
                     <td>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(record.updated_at))}</td>
                     <td><div className="wb-actions">
                       {record.status !== 'Posted' && !(moduleId === 'fixed-assets' && record.status === 'Active') && <button onClick={() => startEdit(record)} disabled={busy}>Edit</button>}
                       {postingModule && record.status !== 'Posted' && <button onClick={() => postRecord(record)} disabled={busy}>Post</button>}
+                      {invoiceModule && record.status === 'Posted' && (settlements[record.id]?.outstanding_minor ?? Number(record.data.amount || 0) * 100 + Number(record.data.tax_amount_minor || 0)) > 0 && (
+                        <button onClick={() => startPayment(record)} disabled={busy}>{moduleId === 'ap' ? 'Record payment' : 'Record receipt'}</button>
+                      )}
                       {moduleId === 'fixed-assets' && record.status !== 'Active' && <button onClick={() => postAssetAcquisition(record)} disabled={busy}>Post asset</button>}
                       {moduleId === 'fixed-assets' && record.status === 'Active' && <button onClick={() => depreciateAsset(record)} disabled={busy}>Post depreciation</button>}
                       {record.status !== 'Posted' && !(moduleId === 'fixed-assets' && record.status === 'Active') && <button className="danger" onClick={() => remove(record)} disabled={busy}>Delete</button>}
                     </div></td>
                   </tr>
                 ))}
-                {!filteredRecords.length && <tr><td colSpan={tableFields.length + 4} className="wb-empty">{records.length ? 'No records match your search.' : `No ${module.label.toLowerCase()} records yet. Use “New record” to add one; posted transactions update the live ledger.`}</td></tr>}
+                {!filteredRecords.length && <tr><td colSpan={tableFields.length + (invoiceModule ? 7 : 4)} className="wb-empty">{records.length ? 'No records match your search.' : `No ${module.label.toLowerCase()} records yet. Use “New record” to add one; posted transactions update the live ledger.`}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -482,6 +561,29 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
               )}
               {error && <div className="wb-error" role="alert">{error}</div>}
               <footer><button type="button" className="wb-cancel" onClick={() => setShowForm(false)}>Cancel</button><button className="wb-primary" disabled={busy}>{busy ? 'Saving…' : 'Save record'}</button></footer>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {paymentRecord && (
+        <div className="wb-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPaymentRecord(null) }}>
+          <section className="wb-modal" role="dialog" aria-modal="true" aria-labelledby="wb-payment-title">
+            <header><div><p>{moduleId === 'ap' ? 'ACCOUNTS PAYABLE' : 'ACCOUNTS RECEIVABLE'}</p><h2 id="wb-payment-title">{moduleId === 'ap' ? 'Record supplier payment' : 'Record customer receipt'}</h2></div><button aria-label="Close payment form" onClick={() => setPaymentRecord(null)}>×</button></header>
+            <form onSubmit={savePayment}>
+              <div className="wb-payment-context">
+                <b>{paymentRecord.name}</b>
+                <span>Outstanding: {new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format((settlements[paymentRecord.id]?.outstanding_minor ?? Number(paymentRecord.data.amount || 0) * 100 + Number(paymentRecord.data.tax_amount_minor || 0)) / 100)}</span>
+                <small>Posting this {moduleId === 'ap' ? 'payment' : 'receipt'} creates balanced cash and control-account entries in the General Ledger.</small>
+              </div>
+              <label className="wb-field"><span>{moduleId === 'ap' ? 'Payment' : 'Receipt'} reference *</span><input maxLength={100} value={paymentForm.payment_reference} onChange={(event) => setPaymentForm((current) => ({ ...current, payment_reference: event.target.value }))} required /></label>
+              <div className="wb-form-grid">
+                <label className="wb-field"><span>Posting date *</span><input type="date" value={paymentForm.posting_date} onChange={(event) => setPaymentForm((current) => ({ ...current, posting_date: event.target.value }))} required /></label>
+                <label className="wb-field"><span>Amount (₹) *</span><input type="number" min="0.01" step="0.01" max={(settlements[paymentRecord.id]?.outstanding_minor ?? Number(paymentRecord.data.amount || 0) * 100 + Number(paymentRecord.data.tax_amount_minor || 0)) / 100} value={paymentForm.amount} onChange={(event) => setPaymentForm((current) => ({ ...current, amount: event.target.value }))} required /></label>
+              </div>
+              <label className="wb-field"><span>Cash / bank account *</span><select value={paymentForm.cash_account_code} onChange={(event) => setPaymentForm((current) => ({ ...current, cash_account_code: event.target.value }))} required><option value="">Select an active Asset account…</option>{accounts.filter((account) => account.status === 'Active' && account.account_type === 'Asset').map((account) => <option key={account.account_code} value={account.account_code}>{account.account_code} · {account.account_name}</option>)}</select></label>
+              {error && <div className="wb-error" role="alert">{error}</div>}
+              <footer><button type="button" className="wb-cancel" onClick={() => setPaymentRecord(null)}>Cancel</button><button className="wb-primary" disabled={busy}>{busy ? 'Posting…' : moduleId === 'ap' ? 'Post payment' : 'Post receipt'}</button></footer>
             </form>
           </section>
         </div>

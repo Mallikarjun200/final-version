@@ -95,3 +95,24 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   CONSTRAINT uq_ledger_source_line UNIQUE (owner_id, source_module, source_record_id, line_number),
   INDEX ix_ledger_owner_account_date (owner_id, account_code, posting_date)
 );
+
+CREATE TABLE IF NOT EXISTS invoice_settlements (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_id INT NOT NULL,
+  invoice_record_id INT NOT NULL,
+  module_id VARCHAR(40) NOT NULL,
+  payment_reference VARCHAR(100) NOT NULL,
+  posting_date DATE NOT NULL,
+  amount_minor BIGINT NOT NULL,
+  cash_account_code VARCHAR(40) NOT NULL,
+  cash_account_name VARCHAR(160) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_settlement_owner FOREIGN KEY (owner_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_settlement_invoice FOREIGN KEY (invoice_record_id)
+    REFERENCES module_records(id) ON DELETE RESTRICT,
+  CONSTRAINT ck_settlement_module CHECK (module_id IN ('ap', 'ar')),
+  CONSTRAINT ck_settlement_amount CHECK (amount_minor > 0),
+  CONSTRAINT uq_settlement_payment_reference UNIQUE (owner_id, module_id, payment_reference),
+  INDEX ix_settlement_owner_invoice (owner_id, invoice_record_id)
+);
