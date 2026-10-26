@@ -21,3 +21,56 @@
 .period-modal footer { display: flex; justify-content: end; gap: 8px; }
 .ledger-empty .period-action { margin-top: 12px; }
 @media(max-width:550px) { .period-heading-actions { width: 100%; }.period-form-grid { grid-template-columns: 1fr; } }
+
+.period-overview { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
+.period-overview-card { position: relative; display: flex; align-items: center; gap: 13px; min-height: 112px; overflow: hidden; padding: 16px; border: 1px solid #e8ecf4; border-radius: 13px; background: #fff; box-shadow: 0 4px 14px rgba(30,45,82,.035); }
+.period-overview-card::after { position: absolute; right: -20px; bottom: -33px; width: 90px; height: 90px; border-radius: 50%; background: currentColor; content: ""; opacity: .035; }
+.period-overview-icon { display: grid; flex: 0 0 40px; width: 40px; height: 40px; place-items: center; border-radius: 12px; color: #536bd7; background: #eef1ff; font-size: 20px; }
+.period-overview-card.open .period-overview-icon { color: #198259; background: #e9f7ef; }
+.period-overview-card.closed .period-overview-icon { color: #b6781d; background: #fff5df; }
+.period-overview-card.active-year .period-overview-icon { color: #8254bd; background: #f4edfc; }
+.period-overview-card > div { display: grid; min-width: 0; gap: 3px; }
+.period-overview-card small { color: #68748d; font-size: 10px; font-weight: 650; }
+.period-overview-card b { overflow: hidden; color: #1e2b47; font-size: 22px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.period-overview-card em { overflow: hidden; color: #8992a5; font-size: 10px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.period-list-panel { overflow: hidden; border: 1px solid #e8ecf4; border-radius: 14px; background: #fff; box-shadow: 0 5px 18px rgba(30,45,82,.035); }
+.period-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border-bottom: 1px solid #edf0f6; }
+.period-list-heading > div:first-child { flex: 0 0 auto; }
+.period-list-heading p { margin: 0 0 5px; color: #6879d9; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.period-list-heading h2 { margin: 0 0 4px; color: #1e2b47; font-size: 17px; }
+.period-list-heading > div:first-child > span { color: #8992a5; font-size: 10px; }
+.period-filters { display: flex; align-items: end; justify-content: end; gap: 9px; }
+.period-search { display: flex; align-items: center; gap: 7px; width: min(220px,24vw); min-height: 36px; padding: 0 10px; border: 1px solid #e1e6f0; border-radius: 8px; color: #8b95a9; background: #fff; }
+.period-search > span { font-size: 20px; line-height: 1; }
+.period-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: #293550; background: transparent; font: inherit; font-size: 11px; }
+.period-search:focus-within { border-color: #8b9be8; box-shadow: 0 0 0 3px rgba(83,107,215,.1); }
+.period-filter-select { display: grid; gap: 3px; color: #7e899e; font-size: 9px; font-weight: 650; }
+.period-filter-select select { min-width: 112px; height: 36px; border: 1px solid #e1e6f0; border-radius: 8px; padding: 0 9px; color: #3b4763; background: #fff; font-size: 10px; }
+.period-list-panel .ledger-table-wrap { border: 0; border-radius: 0; box-shadow: none; }
+.period-list-panel .ledger-table thead th { padding-top: 12px; padding-bottom: 12px; background: #f8f9fc; }
+.period-list-panel .ledger-table tbody tr.current-period-row { background: #f7f8ff; }
+.period-number { display: inline-grid; width: 26px; height: 26px; margin-right: 8px; place-items: center; border-radius: 8px; color: #4d62c4; background: #eef1ff; font-size: 10px; font-weight: 750; }
+.period-year-active { display: block; margin-top: 3px; color: #198259; font-size: 9px; font-weight: 600; }
+.period-year-status { display: inline-block; padding: 4px 7px; border-radius: 999px; color: #62708b; background: #f0f2f6; font-size: 9px; font-weight: 700; }
+.period-year-status.active { color: #14754e; background: #e3f6eb; }
+.period-year-status.closed { color: #717b8e; background: #eef0f4; }
+.period-list-footer { display: flex; justify-content: space-between; gap: 12px; padding: 11px 18px; border-top: 1px solid #edf0f6; color: #828da2; background: #fbfcfe; font-size: 9px; }
+
+@media(max-width:1050px) {
+  .period-overview { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .period-list-heading { align-items: start; flex-direction: column; }
+  .period-filters { width: 100%; justify-content: start; }
+  .period-search { width: auto; flex: 1 1 180px; }
+}
+@media(max-width:650px) {
+  .period-overview { gap: 8px; }
+  .period-overview-card { min-height: 96px; gap: 9px; padding: 12px; }
+  .period-overview-icon { flex-basis: 34px; width: 34px; height: 34px; }
+  .period-overview-card b { font-size: 18px; }
+  .period-list-heading { padding: 15px; }
+  .period-filters { align-items: stretch; flex-wrap: wrap; }
+  .period-search { flex-basis: 100%; }
+  .period-filter-select { flex: 1 1 130px; }
+  .period-filter-select select { width: 100%; }
+  .period-list-footer { flex-direction: column; }
+}
