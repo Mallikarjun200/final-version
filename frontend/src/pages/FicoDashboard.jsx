@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Icon from '../components/Icon.jsx'
 import {
-  financialSummary, ficoModules, inr, inrWhole, kpis, quickActions, recentTransactions,
+  ficoModules, inr, kpis, quickActions,
 } from '../data/ficoData.js'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 const statusClass = {
   Posted: 'ok',
@@ -11,16 +13,43 @@ const statusClass = {
   'In Progress': 'neutral',
 }
 
+async function fetchDashboard(period) {
+  const response = await fetch(`${API_BASE}/api/accounting/dashboard-summary?period=${encodeURIComponent(period)}`, {
+    credentials: 'include',
+  })
+  const data = await response.json()
+  if (!response.ok) {
+    throw new Error(typeof data?.detail === 'string' ? data.detail : `Dashboard request failed (${response.status}).`)
+  }
+  return data
+}
+
 export default function FicoDashboard({ onNavigate, search }) {
   const [range, setRange] = useState('This Year')
+  const [dashboard, setDashboard] = useState(null)
+  const [dashboardError, setDashboardError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetchDashboard(range)
+      .then((summary) => {
+        if (!cancelled) {
+          setDashboard(summary)
+          setDashboardError('')
+        }
+      })
+      .catch((error) => { if (!cancelled) setDashboardError(error.message) })
+    return () => { cancelled = true }
+  }, [range])
 
   const rows = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    if (!needle) return recentTransactions
-    return recentTransactions.filter((r) =>
+    const transactions = dashboard?.recent_transactions || []
+    if (!needle) return transactions
+    return transactions.filter((r) =>
       [r.doc, r.module, r.description, r.status, r.date].some((v) => v.toLowerCase().includes(needle)),
     )
-  }, [search])
+  }, [dashboard, search])
 
   const modules = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -31,6 +60,7 @@ export default function FicoDashboard({ onNavigate, search }) {
   return (
     <div className="dash">
       <div className="dash-main">
+        {dashboardError && <div className="wb-error" role="alert">{dashboardError}</div>}
         <div className="page-title">
           <h1>FICO - Financial Accounting</h1>
           <p>Manage your company&apos;s financial transactions and reports</p>
@@ -42,7 +72,7 @@ export default function FicoDashboard({ onNavigate, search }) {
               <span className="kpi-blob" aria-hidden="true" />
               <span className="tile-icon"><Icon name={k.icon} size={19} /></span>
               <div className="kpi-label">{k.label}</div>
-              <div className="kpi-value">{k.value}</div>
+              <div className="kpi-value">{dashboard ? dashboard.kpis[k.id] : '—'}</div>
               <button className="link" onClick={() => onNavigate(k.target)}>
                 View All <Icon name="ArrowRight" size={13} />
               </button>
@@ -68,16 +98,16 @@ export default function FicoDashboard({ onNavigate, search }) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.doc}>
-                    <td>{r.date}</td>
+                    <td>{new Intl.DateTimeFormat('en-IN').format(new Date(`${r.date}T00:00:00`))}</td>
                     <td>{r.doc}</td>
                     <td>{r.module}</td>
                     <td>{r.description}</td>
-                    <td className="num">{inr(r.amount)}</td>
+                    <td className="num">{inr(r.amount_minor / 100)}</td>
                     <td><span className={`pill ${statusClass[r.status]}`}>{r.status}</span></td>
                   </tr>
                 ))}
                 {!rows.length && (
-                  <tr><td colSpan="6" className="empty">No transactions match &ldquo;{search}&rdquo;.</td></tr>
+                  <tr><td colSpan="6" className="empty">{search ? `No transactions match “${search}”.` : 'No posted transactions yet.'}</td></tr>
                 )}
               </tbody>
             </table>
@@ -133,13 +163,16 @@ export default function FicoDashboard({ onNavigate, search }) {
             </select>
           </div>
           <dl>
-            {financialSummary.map((s) => (
+            {[
+              { label: 'Total Income', amount: dashboard?.financial_summary.total_income_minor },
+              { label: 'Total Expenses', amount: dashboard?.financial_summary.total_expenses_minor },
+              { label: 'Net Income', amount: dashboard?.financial_summary.net_income_minor },
+            ].map((s) => (
               <div key={s.label} className="sum-row">
                 <div>
                   <dt>{s.label}</dt>
-                  <dd>{inrWhole(s.amount)}</dd>
+                  <dd>{s.amount === undefined ? '—' : inr(s.amount / 100)}</dd>
                 </div>
-                <span className="delta"><span aria-hidden="true">↑</span> {s.change}</span>
               </div>
             ))}
           </dl>

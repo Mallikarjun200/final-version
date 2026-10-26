@@ -74,3 +74,24 @@ CREATE TABLE IF NOT EXISTS module_records (
     REFERENCES users(id) ON DELETE CASCADE,
   INDEX ix_module_records_owner_module (owner_id, module_id)
 );
+
+CREATE TABLE IF NOT EXISTS ledger_entries (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_id INT NOT NULL,
+  source_module VARCHAR(40) NOT NULL,
+  source_record_id INT NOT NULL,
+  line_number INT NOT NULL,
+  account_code VARCHAR(40) NOT NULL,
+  account_name VARCHAR(160) NOT NULL,
+  account_type VARCHAR(40) NOT NULL,
+  posting_date DATE NOT NULL,
+  document_no VARCHAR(160) NOT NULL,
+  description VARCHAR(500) NOT NULL,
+  debit_minor BIGINT NOT NULL DEFAULT 0,
+  credit_minor BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_ledger_owner FOREIGN KEY (owner_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT uq_ledger_source_line UNIQUE (owner_id, source_module, source_record_id, line_number),
+  INDEX ix_ledger_owner_account_date (owner_id, account_code, posting_date)
+);

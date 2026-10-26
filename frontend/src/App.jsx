@@ -4,9 +4,11 @@ import Topbar from './components/Topbar.jsx'
 import FicoDashboard from './pages/FicoDashboard.jsx'
 import ComingSoon from './pages/ComingSoon.jsx'
 import Login from './pages/Login.jsx'
+import LedgerReport from './pages/LedgerReport.jsx'
+import FiscalPeriodManager from './pages/FiscalPeriodManager.jsx'
 import ModuleWorkbench from './pages/ModuleWorkbench.jsx'
-import TrialBalance from './pages/TrialBalance.jsx'
 import FiscalYearModule from './FiscalYearModule.jsx'
+import ModuleInsights from './pages/ModuleInsights.jsx'
 import { ficoNav } from './data/ficoData.js'
 import './styles/shell.css'
 
@@ -79,7 +81,13 @@ function App() {
   } else if (page === 'fiscal-year') {
     content = <FiscalYearModule embedded />
   } else if (page === 'trial-balance') {
-    content = <TrialBalance search={search} onResetSearch={() => setSearch('')} />
+    content = <LedgerReport mode="trial-balance" search={search} />
+  } else if (page === 'general-ledger') {
+    content = <LedgerReport mode="general-ledger" search={search} />
+  } else if (page === 'fiscal-period') {
+    content = <FiscalPeriodManager />
+  } else if (page === 'financial-reports') {
+    content = <ModuleInsights moduleId="financial-reports" />
   } else if (ficoNav.some((item) => item.id === page)) {
     content = <ModuleWorkbench key={page} moduleId={page} search={search} />
   } else {

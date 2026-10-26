@@ -22,6 +22,7 @@
 .wb-actions button:disabled { opacity: .5; cursor: wait; }
 .wb-empty { padding: 28px 20px !important; color: #7b859c !important; text-align: center; }
 .wb-error { padding: 10px 12px; border: 1px solid #f1c4c8; border-radius: 9px; color: #a62633; background: #fff1f1; font-size: 12px; }
+.wb-notice { padding: 10px 12px; border: 1px solid #bee6d0; border-radius: 9px; color: #14754e; background: #eaf8f0; font-size: 12px; }
 .wb-modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(25,35,66,.42); }
 .wb-modal { width: min(100%, 620px); max-height: min(90vh, 820px); overflow-y: auto; border-radius: 18px; background: #fff; box-shadow: 0 24px 80px rgba(17,29,68,.25); }
 .wb-modal > header { display: flex; justify-content: space-between; align-items: start; padding: 20px 22px; border-bottom: 1px solid #edf0f6; }
@@ -34,4 +35,11 @@
 .wb-field input:focus, .wb-field select:focus { border-color: #7082e8; box-shadow: 0 0 0 3px rgba(91,112,230,.14); }
 .wb-modal footer { display: flex; justify-content: end; gap: 8px; padding-top: 5px; }
 .wb-cancel { border: 1px solid #dce3f2; border-radius: 9px; padding: 9px 13px; color: #465575; background: #fff; cursor: pointer; font-size: 12px; }
+.wb-lines { display: grid; gap: 10px; padding: 12px; border: 1px solid #e4e8f3; border-radius: 10px; background: #f8f9fd; }
+.wb-lines-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.wb-lines-head > div { display: grid; gap: 4px; color: #33405f; font-size: 12px; }
+.wb-lines-head small { color: #78839a; font-size: 10px; font-weight: 400; }
+.wb-journal-line { display: grid; grid-template-columns: minmax(180px,2fr) minmax(100px,1fr) minmax(100px,1fr) auto; align-items: end; gap: 8px; }
+.wb-remove-line { width: 32px; height: 34px; border: 1px solid #f0c6ca; border-radius: 8px; color: #a62633; background: #fff; font-size: 18px; cursor: pointer; }
 @media (max-width: 600px) { .wb-heading { align-items: start; flex-direction: column; } .wb-form-grid { grid-template-columns: 1fr; } .wb-modal { max-height: 94vh; } }
+@media (max-width: 600px) { .wb-journal-line { grid-template-columns: 1fr 1fr; }.wb-journal-line .wb-field:first-child { grid-column: 1 / -1; } }

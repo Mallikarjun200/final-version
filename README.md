@@ -31,7 +31,11 @@ The API defaults to a local SQLite database (`stackly_oneerp.db`) and creates it
 
 Open the app and choose **Create an account** on the login page. Passwords are stored as salted PBKDF2 hashes; sign-in uses a seven-day, HTTP-only session cookie. Sign out revokes the stored session. Set `COOKIE_SECURE=true` when serving over HTTPS.
 
-Company, Fiscal Period, Chart of Accounts, Journal Entry, General Ledger, Accounts Payable, Accounts Receivable, Fixed Assets, Budgeting, GST, and Financial Reports have account-scoped create, view, edit, and delete records. Fiscal Year retains its calendar validation and automatic period creation. Trial Balance remains a sample-data report. The generic module records are persistent CRUD workspaces, not a substitute for accounting posting, tax, payment, or financial-statement calculations; those workflows require agreed business rules.
+Company, Fiscal Period, Chart of Accounts, Journal Entry, Accounts Payable, Accounts Receivable, Fixed Assets, Budgeting, GST, and Financial Reports are connected to the signed-in workspace. The dashboard counts, posted transactions, and income/expense summaries are loaded from workspace data rather than sample figures. Only posted documents affect the live Trial Balance and General Ledger; drafts remain outside the ledger. Journal entries must balance, and posting is restricted to an active fiscal year and an open period.
+
+The current India/INR accounting MVP supports AP/AR invoice posting with configured IGST or CGST+SGST rates, fixed-asset acquisition and sequential monthly straight-line depreciation, approved expense budgets versus posted actuals, a posted-GST summary, and generated income-statement and balance-sheet views. GST amounts are rounded to paise; configured CGST and SGST component rates are calculated separately. Asset depreciation starts in the month after acquisition and requires month-end posting in sequence. The balance sheet presents current earnings as unclosed equity.
+
+This is a management MVP, not production-grade accounting or tax software. It does not provide payments, bank reconciliation, invoice settlement, tax returns/filing, cess, cash-flow statements, multi-currency accounting, automated period-end closing, partial-month depreciation, or formal accounting approval controls. It does not validate Indian tax law or replace review by a qualified accountant. Verify configurations and reports before relying on them.
 
 ## Deploy to Render
 

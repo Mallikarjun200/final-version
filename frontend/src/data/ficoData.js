@@ -1,19 +1,10 @@
-// Sample data for the FICO dashboard. Replace with API calls when endpoints exist.
+// Dashboard labels are static; figures and transactions are loaded from the authenticated API.
 
 export const kpis = [
-  { id: 'companies', label: 'Total Companies', value: '2', tone: 'blue', icon: 'Building2', target: 'company' },
-  { id: 'years', label: 'Active Fiscal Years', value: '2', tone: 'green', icon: 'CalendarDays', target: 'fiscal-year' },
-  { id: 'periods', label: 'Open Periods', value: '5', tone: 'purple', icon: 'CalendarClock', target: 'fiscal-period' },
-  { id: 'accounts', label: 'Total Accounts', value: '128', tone: 'orange', icon: 'ListTree', target: 'chart-of-accounts' },
-]
-
-export const recentTransactions = [
-  { date: '10-04-2025', doc: 'JE-000123', module: 'Journal Entry', description: 'Rent Expense', amount: 10000, status: 'Posted' },
-  { date: '09-04-2025', doc: 'AP-000456', module: 'Accounts Payable', description: 'Supplier Invoice', amount: 50000, status: 'Approved' },
-  { date: '08-04-2025', doc: 'AR-000789', module: 'Accounts Receivable', description: 'Customer Invoice', amount: 75000, status: 'Approved' },
-  { date: '07-04-2025', doc: 'FA-000321', module: 'Fixed Assets', description: 'Machine Purchase', amount: 500000, status: 'Posted' },
-  { date: '06-04-2025', doc: 'BG-000654', module: 'Budgeting', description: 'Annual Budget', amount: 1000000, status: 'Created' },
-  { date: '05-04-2025', doc: 'GL-000987', module: 'General Ledger', description: 'Period Close', amount: 0, status: 'In Progress' },
+  { id: 'companies', label: 'Total Companies', tone: 'blue', icon: 'Building2', target: 'company' },
+  { id: 'years', label: 'Active Fiscal Years', tone: 'green', icon: 'CalendarDays', target: 'fiscal-year' },
+  { id: 'periods', label: 'Open Periods', tone: 'purple', icon: 'CalendarClock', target: 'fiscal-period' },
+  { id: 'accounts', label: 'Active Accounts', tone: 'orange', icon: 'ListTree', target: 'chart-of-accounts' },
 ]
 
 export const quickActions = [
@@ -23,12 +14,6 @@ export const quickActions = [
   { label: 'Add Fixed Asset', icon: 'Landmark', tone: 'orange', target: 'fixed-assets' },
   { label: 'Create Budget', icon: 'PiggyBank', tone: 'teal', target: 'budgeting' },
   { label: 'Generate Report', icon: 'FileBarChart', tone: 'indigo', target: 'financial-reports' },
-]
-
-export const financialSummary = [
-  { label: 'Total Income', amount: 1250000, change: '+12%' },
-  { label: 'Total Expenses', amount: 875000, change: '+8%' },
-  { label: 'Net Profit', amount: 375000, change: '+15%' },
 ]
 
 export const ficoModules = [

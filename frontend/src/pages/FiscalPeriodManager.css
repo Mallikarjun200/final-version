@@ -1,0 +1,5 @@
+.period-status { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; }
+.period-status.open { color: #14754e; background: #e3f6eb; }
+.period-status.closed { color: #9a5a12; background: #fff1cf; }
+.period-action { border: 1px solid #dce3f2; border-radius: 8px; padding: 6px 9px; color: #435fd4; background: #fff; font-size: 10px; cursor: pointer; }
+.period-action:disabled { cursor: wait; opacity: .6; }
