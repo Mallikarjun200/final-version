@@ -221,8 +221,11 @@ def test_forgot_password_sends_single_use_reset_link_and_revokes_sessions(test_c
 
 
 def test_forgot_password_requires_email_configuration_for_all_addresses(test_client, monkeypatch):
+    monkeypatch.setenv("SMTP_PROVIDER", "custom")
     monkeypatch.delenv("SMTP_HOST", raising=False)
     monkeypatch.delenv("SMTP_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("SMTP_USERNAME", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
 
     known_account = test_client.post(
         "/api/auth/forgot-password",
@@ -235,6 +238,34 @@ def test_forgot_password_requires_email_configuration_for_all_addresses(test_cli
 
     assert known_account.status_code == unknown_account.status_code == 503
     assert known_account.json() == unknown_account.json()
+
+
+def test_gmail_mail_configuration_uses_secure_defaults_and_account_sender(monkeypatch):
+    monkeypatch.setenv("SMTP_PROVIDER", "gmail")
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.delenv("SMTP_PORT", raising=False)
+    monkeypatch.delenv("SMTP_FROM_EMAIL", raising=False)
+    monkeypatch.setenv("SMTP_USERNAME", "finance@example.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "google-app-password")
+
+    config = main.password_reset_mail_config()
+
+    assert config["host"] == "smtp.gmail.com"
+    assert config["port"] == 587
+    assert config["username"] == "finance@example.com"
+    assert config["sender"] == "finance@example.com"
+
+
+def test_gmail_mail_configuration_requires_an_app_password(monkeypatch):
+    monkeypatch.setenv("SMTP_PROVIDER", "gmail")
+    monkeypatch.setenv("SMTP_USERNAME", "finance@example.com")
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+
+    with pytest.raises(main.HTTPException) as error:
+        main.password_reset_mail_config()
+
+    assert error.value.status_code == 503
+    assert "Google app password" in error.value.detail
 
 
 def test_registration_rejects_duplicate_email(test_client):

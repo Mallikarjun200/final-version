@@ -699,10 +699,21 @@ def utc_naive_now() -> datetime:
 
 
 def password_reset_mail_config() -> dict[str, str | int]:
-    host = os.getenv("SMTP_HOST", "").strip()
+    provider = os.getenv("SMTP_PROVIDER", "custom").strip().lower()
+    if provider not in {"custom", "gmail"}:
+        raise HTTPException(status_code=503, detail="Password reset email provider is not supported.")
+    host = os.getenv("SMTP_HOST", "smtp.gmail.com" if provider == "gmail" else "").strip()
+    default_port = "587"
     sender = os.getenv("SMTP_FROM_EMAIL", "").strip()
     username = os.getenv("SMTP_USERNAME", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
+    if provider == "gmail":
+        sender = sender or username
+        if not username or not password:
+            raise HTTPException(
+                status_code=503,
+                detail="Gmail password reset is not configured. Add SMTP_USERNAME and an SMTP_PASSWORD Google app password in Render.",
+            )
     if not host or not sender:
         raise HTTPException(
             status_code=503,
@@ -714,7 +725,7 @@ def password_reset_mail_config() -> dict[str, str | int]:
             detail="Password reset email is misconfigured. Set both SMTP_USERNAME and SMTP_PASSWORD.",
         )
     try:
-        port = int(os.getenv("SMTP_PORT", "587"))
+        port = int(os.getenv("SMTP_PORT", default_port))
     except ValueError as error:
         raise HTTPException(status_code=503, detail="SMTP_PORT must be a valid port number.") from error
     if not 1 <= port <= 65535:
