@@ -1,0 +1,10 @@
+{
+  "name": "stackly-oneerp",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev -- --host 127.0.0.1",
+    "build": "npm --prefix frontend run build",
+    "lint": "npm --prefix frontend run lint",
+    "api": "python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000"
+  }
+}
