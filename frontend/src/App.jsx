@@ -89,7 +89,7 @@ function App() {
   } else if (page === 'financial-reports') {
     content = <ModuleInsights moduleId="financial-reports" />
   } else if (ficoNav.some((item) => item.id === page)) {
-    content = <ModuleWorkbench key={page} moduleId={page} search={search} />
+    content = <ModuleWorkbench key={page} moduleId={page} search={search} onNavigate={navigate} />
   } else {
     const title = ficoNav.find((n) => n.id === page)?.label ?? 'Module'
     content = <ComingSoon title={title} onBack={() => navigate('home')} />

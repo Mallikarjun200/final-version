@@ -80,6 +80,32 @@ export default function FicoDashboard({ onNavigate, search }) {
           ))}
         </section>
 
+        {dashboard && (
+          <section className="setup-card" aria-labelledby="setup-heading">
+            <div className="setup-heading">
+              <div>
+                <p>WORKSPACE SETUP</p>
+                <h2 id="setup-heading">Get started with connected accounting</h2>
+                <span>Set up your company, chart of accounts, and fiscal year before posting transactions.</span>
+              </div>
+            </div>
+            <div className="setup-steps">
+              {[
+                { id: 'company', label: 'Company', detail: 'Add your company details', complete: dashboard.kpis.companies > 0 },
+                { id: 'chart-of-accounts', label: 'Chart of Accounts', detail: 'Create and activate ledger accounts', complete: dashboard.kpis.accounts > 0 },
+                { id: 'fiscal-year', label: 'Fiscal Year', detail: 'Create and activate an open year', complete: dashboard.kpis.years > 0 },
+              ].map((step, index) => (
+                <div className={`setup-step ${step.complete ? 'complete' : ''}`} key={step.id}>
+                  <span className="setup-step-number">{step.complete ? '✓' : index + 1}</span>
+                  <div><b>{step.label}</b><small>{step.complete ? 'Setup started' : step.detail}</small></div>
+                  <button onClick={() => onNavigate(step.id)}>{step.complete ? 'Review' : 'Set up'}</button>
+                </div>
+              ))}
+            </div>
+            <p className="setup-note">After setup, create a draft in Journal Entry, AP, or AR and choose <b>Post</b> to update the General Ledger and Trial Balance.</p>
+          </section>
+        )}
+
         <section className="card glass">
           <div className="card-head">
             <h2>Recent Transactions</h2>

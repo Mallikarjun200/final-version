@@ -257,6 +257,28 @@
 .kpi.tone-purple .kpi-value { color: #6a45dc; }
 .kpi.tone-orange .kpi-value { color: #e8701a; }
 
+/* ---------- First-use accounting setup ---------- */
+.setup-card {
+  padding: 17px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 20px;
+  background: linear-gradient(115deg, rgba(255,255,255,.82), rgba(237,244,255,.76));
+  box-shadow: 0 8px 28px rgba(76,98,180,.1);
+}
+.setup-heading p { margin: 0 0 5px; color: #596bd0; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.setup-heading h2 { margin: 0; color: var(--navy); font-size: 15px; }
+.setup-heading span { display: block; margin-top: 5px; color: var(--muted); font-size: 11.5px; }
+.setup-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
+.setup-step { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px; border: 1px solid #e2e8f5; border-radius: 11px; background: rgba(255,255,255,.76); }
+.setup-step-number { display: grid; flex: 0 0 25px; width: 25px; height: 25px; place-items: center; border-radius: 50%; color: #fff; background: #7281df; font-size: 11px; font-weight: 800; }
+.setup-step.complete .setup-step-number { background: #17a26f; }
+.setup-step > div { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.setup-step b { color: #263452; font-size: 10.5px; }
+.setup-step small { overflow: hidden; color: #79839b; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.setup-step button { flex: 0 0 auto; border: 0; padding: 5px; color: #3b70df; background: transparent; font-size: 10px; font-weight: 700; cursor: pointer; }
+.setup-step button:hover { text-decoration: underline; }
+.setup-note { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid #e5eaf4; color: #69758e; font-size: 10.5px; line-height: 1.5; }
+
 /* ---------- Transactions ---------- */
 .table-wrap { overflow-x: auto; }
 .txn { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; white-space: nowrap; }
@@ -391,6 +413,8 @@
   .module-grid { grid-template-columns: minmax(0, 1fr); }
   .page-title h1 { font-size: 19px; }
 }
+
+@media (max-width: 700px) { .setup-steps { grid-template-columns: 1fr; } }
 
 @media (min-width: 901px) { .scrim { display: none; } }
 

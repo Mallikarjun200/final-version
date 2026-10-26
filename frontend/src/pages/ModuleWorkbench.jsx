@@ -100,6 +100,18 @@ const moduleFields = {
   ],
 }
 
+const moduleTableFieldKeys = {
+  company: ['company_code', 'country', 'currency'],
+  'chart-of-accounts': ['account_code', 'account_type', 'currency'],
+  'journal-entry': ['document_no', 'posting_date'],
+  ap: ['supplier', 'invoice_no', 'invoice_date', 'amount', 'tax_mode'],
+  ar: ['customer', 'invoice_no', 'invoice_date', 'amount', 'tax_mode'],
+  'fixed-assets': ['asset_code', 'acquisition_date', 'cost', 'useful_life_years'],
+  budgeting: ['account_code', 'start_date', 'end_date', 'amount'],
+  gst: ['gstin', 'tax_type', 'rate', 'effective_date'],
+  'financial-reports': ['report_type', 'period', 'generated_on'],
+}
+
 async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
@@ -130,9 +142,12 @@ function initialData(moduleId, fields) {
   return data
 }
 
-export default function ModuleWorkbench({ moduleId, search = '' }) {
+export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
   const module = ficoNav.find((item) => item.id === moduleId)
   const fields = moduleFields[moduleId] || []
+  const tableFields = (moduleTableFieldKeys[moduleId] || fields.slice(0, 3).map((field) => field.key))
+    .map((key) => fields.find((field) => field.key === key))
+    .filter(Boolean)
   const [records, setRecords] = useState([])
   const [form, setForm] = useState({ name: '', status: 'Draft', data: initialData(moduleId, fields) })
   const [editingId, setEditingId] = useState(null)
@@ -147,6 +162,20 @@ export default function ModuleWorkbench({ moduleId, search = '' }) {
   const postingModule = ['journal-entry', 'ap', 'ar'].includes(moduleId)
   const invoiceModule = ['ap', 'ar'].includes(moduleId)
   const needsAccounts = postingModule || ['fixed-assets', 'budgeting'].includes(moduleId)
+  const activeAccountTypes = new Set(accounts.filter((account) => account.status === 'Active').map((account) => account.account_type))
+  const hasActiveAccounts = accounts.some((account) => account.status === 'Active')
+  const expectedAccountTypes = moduleId === 'ap'
+    ? ['Expense', 'Liability']
+    : moduleId === 'ar'
+      ? ['Income', 'Asset']
+      : moduleId === 'budgeting'
+        ? ['Expense']
+        : moduleId === 'fixed-assets'
+          ? ['Asset', 'Expense']
+          : moduleId === 'journal-entry' && !hasActiveAccounts
+            ? ['Chart of Accounts']
+        : []
+  const missingAccountTypes = expectedAccountTypes.filter((accountType) => !activeAccountTypes.has(accountType))
 
   useEffect(() => {
     let cancelled = false
@@ -330,6 +359,29 @@ export default function ModuleWorkbench({ moduleId, search = '' }) {
         <div><p>FICO WORKSPACE</p><h1>{module.label}</h1><span>{postingModule ? 'Drafts do not affect balances; posted entries are immutable and feed the live ledger.' : `Manage ${module.label.toLowerCase()} records in your workspace.`}</span></div>
         <button className="wb-primary" onClick={startCreate}>＋ New record</button>
       </header>
+      {needsAccounts && missingAccountTypes.length > 0 && (
+        <div className="wb-prerequisite" role="status">
+          <div>
+            <b>Set up active ledger accounts first</b>
+            <span>{moduleId === 'ap'
+              ? 'AP posting needs Expense and Liability accounts.'
+              : moduleId === 'ar'
+                ? 'AR posting needs Income and Asset accounts.'
+                : moduleId === 'budgeting'
+                  ? 'Budget comparison needs at least one active Expense account.'
+                  : moduleId === 'fixed-assets'
+                    ? 'Asset posting and depreciation need active Asset and Expense accounts.'
+                    : 'Posting needs active chart-of-accounts entries.'} Missing: {missingAccountTypes.join(', ')}.</span>
+          </div>
+          <button onClick={() => onNavigate?.('chart-of-accounts')}>Open Chart of Accounts</button>
+        </div>
+      )}
+      {postingModule && (
+        <div className="wb-prerequisite wb-prerequisite-neutral" role="note">
+          <div><b>Before posting</b><span>Create and activate a fiscal year, then make sure the invoice date is in an open period.</span></div>
+          <button onClick={() => onNavigate?.('fiscal-year')}>Open Fiscal Year</button>
+        </div>
+      )}
       {(moduleId === 'budgeting' || moduleId === 'gst') && <ModuleInsights key={`${moduleId}-${refreshCount}`} moduleId={moduleId} />}
       {error && <div className="wb-error" role="alert">{error}</div>}
       {notice && <div className="wb-notice" role="status">{notice}</div>}
@@ -341,12 +393,22 @@ export default function ModuleWorkbench({ moduleId, search = '' }) {
         {loading ? <div className="wb-empty">Loading records…</div> : (
           <div className="wb-table-scroll">
             <table className="wb-table">
-              <thead><tr><th>Name</th>{fields.slice(0, 3).map((field) => <th key={field.key}>{field.label}</th>)}<th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Name</th>{tableFields.map((field) => <th key={field.key}>{field.label}</th>)}<th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
               <tbody>
                 {filteredRecords.map((record) => (
                   <tr key={record.id}>
                     <td><b>{record.name}</b></td>
-                    {fields.slice(0, 3).map((field) => <td key={field.key}>{record.data[field.key] ?? '—'}</td>)}
+                    {tableFields.map((field) => {
+                      const value = record.data[field.key]
+                      const displayValue = value == null || value === ''
+                        ? '—'
+                        : field.key === 'amount' || ['cost', 'salvage_value'].includes(field.key)
+                          ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(Number(value))
+                          : field.key === 'rate'
+                            ? `${value}%`
+                            : value
+                      return <td key={field.key}>{displayValue}</td>
+                    })}
                     <td><span className="wb-status">{record.status}</span></td>
                     <td>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(record.updated_at))}</td>
                     <td><div className="wb-actions">
@@ -358,7 +420,7 @@ export default function ModuleWorkbench({ moduleId, search = '' }) {
                     </div></td>
                   </tr>
                 ))}
-                {!filteredRecords.length && <tr><td colSpan={fields.length + 4} className="wb-empty">{records.length ? 'No records match your search.' : `No ${module.label.toLowerCase()} records yet. Create one to get started.`}</td></tr>}
+                {!filteredRecords.length && <tr><td colSpan={tableFields.length + 4} className="wb-empty">{records.length ? 'No records match your search.' : `No ${module.label.toLowerCase()} records yet. Use “New record” to add one; posted transactions update the live ledger.`}</td></tr>}
               </tbody>
             </table>
           </div>
