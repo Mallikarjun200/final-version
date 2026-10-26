@@ -167,6 +167,7 @@ def test_registration_and_login_use_http_only_session_cookie(test_client):
 
 
 def test_forgot_password_sends_single_use_reset_link_and_revokes_sessions(test_client, monkeypatch):
+    monkeypatch.setenv("SMTP_PROVIDER", "custom")
     monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
     monkeypatch.setenv("SMTP_PORT", "587")
     monkeypatch.setenv("SMTP_FROM_EMAIL", "accounts@example.com")

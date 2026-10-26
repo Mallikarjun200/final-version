@@ -699,7 +699,7 @@ def utc_naive_now() -> datetime:
 
 
 def password_reset_mail_config() -> dict[str, str | int]:
-    provider = os.getenv("SMTP_PROVIDER", "custom").strip().lower()
+    provider = os.getenv("SMTP_PROVIDER", "gmail").strip().lower()
     if provider not in {"custom", "gmail"}:
         raise HTTPException(status_code=503, detail="Password reset email provider is not supported.")
     host = os.getenv("SMTP_HOST", "smtp.gmail.com" if provider == "gmail" else "").strip()
