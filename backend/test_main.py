@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -59,6 +61,88 @@ def test_create_fiscal_year_generates_twelve_periods(test_client):
     assert year["periods"][0]["start_date"] == "2026-04-01"
     assert year["periods"][-1]["end_date"] == "2027-03-31"
     assert year["status"] == "DRAFT"
+
+
+def test_fiscal_period_dates_can_be_edited_without_breaking_year_continuity(test_client):
+    year = test_client.post(
+        "/api/fiscal-years",
+        json=make_year("FY2027", "2026-04-01", "2027-03-31"),
+    ).json()
+    periods = test_client.get("/api/fiscal-periods").json()
+    april = next(period for period in periods if period["period_number"] == 1)
+    may = next(period for period in periods if period["period_number"] == 2)
+
+    updated = test_client.patch(
+        f"/api/fiscal-periods/{april['id']}",
+        json={
+            "name": "Extended April",
+            "start_date": "2026-04-01",
+            "end_date": "2026-05-05",
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "Extended April"
+    assert updated.json()["start_date"] == "2026-04-01"
+    assert updated.json()["end_date"] == "2026-05-05"
+    refreshed = test_client.get("/api/fiscal-periods").json()
+    may = next(period for period in refreshed if period["period_number"] == 2)
+    assert may["start_date"] == "2026-05-06"
+    assert may["end_date"] == "2026-05-31"
+    assert len(refreshed) == year["period_count"] == 12
+    assert refreshed[0]["start_date"] == year["start"]
+    assert refreshed[-1]["end_date"] == year["end"]
+    assert all(
+        (date.fromisoformat(left["end_date"]) + timedelta(days=1)) == date.fromisoformat(right["start_date"])
+        for left, right in zip(refreshed, refreshed[1:])
+    )
+
+
+def test_fiscal_period_date_edits_validate_bounds_and_posted_ledger_dates(test_client):
+    activate_test_year(test_client)
+    periods = test_client.get("/api/fiscal-periods").json()
+    april = next(period for period in periods if period["period_number"] == 1)
+
+    create_account(test_client, "5000", "Office expense", "Expense")
+    create_account(test_client, "1000", "Bank", "Asset")
+    journal = test_client.post(
+        "/api/modules/journal-entry/records",
+        json={
+            "name": "May posting",
+            "data": {
+                "document_no": "JE-MAY-PERIOD-EDIT",
+                "posting_date": "2026-05-02",
+                "lines": [
+                    {"account_code": "5000", "debit": 10, "credit": 0},
+                    {"account_code": "1000", "debit": 0, "credit": 10},
+                ],
+            },
+        },
+    ).json()
+    assert test_client.post(
+        f"/api/modules/journal-entry/records/{journal['id']}/post"
+    ).status_code == 200
+
+    moved_posting_date = test_client.patch(
+        f"/api/fiscal-periods/{april['id']}",
+        json={
+            "name": april["name"],
+            "start_date": "2026-04-01",
+            "end_date": "2026-05-05",
+        },
+    )
+    assert moved_posting_date.status_code == 409
+    assert "posted ledger entries" in moved_posting_date.json()["detail"]
+
+    outside_fiscal_year = test_client.patch(
+        f"/api/fiscal-periods/{april['id']}",
+        json={
+            "name": april["name"],
+            "start_date": "2026-03-31",
+            "end_date": "2026-04-30",
+        },
+    )
+    assert outside_fiscal_year.status_code == 422
 
 
 def test_fiscal_year_api_requires_authentication(test_client):

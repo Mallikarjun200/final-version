@@ -85,7 +85,7 @@ function App() {
   } else if (page === 'general-ledger') {
     content = <LedgerReport mode="general-ledger" search={search} />
   } else if (page === 'fiscal-period') {
-    content = <FiscalPeriodManager />
+    content = <FiscalPeriodManager onNavigate={navigate} />
   } else if (page === 'financial-reports') {
     content = <ModuleInsights moduleId="financial-reports" />
   } else if (ficoNav.some((item) => item.id === page)) {

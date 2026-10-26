@@ -3,3 +3,20 @@
 .period-status.closed { color: #9a5a12; background: #fff1cf; }
 .period-action { border: 1px solid #dce3f2; border-radius: 8px; padding: 6px 9px; color: #435fd4; background: #fff; font-size: 10px; cursor: pointer; }
 .period-action:disabled { cursor: wait; opacity: .6; }
+.period-heading-actions,.period-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.period-notice { padding: 10px 12px; border: 1px solid #bee6d0; border-radius: 9px; color: #14754e; background: #eaf8f0; font-size: 12px; }
+.period-modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(25,35,66,.42); }
+.period-modal { width: min(100%, 560px); max-height: min(90vh, 720px); overflow-y: auto; border-radius: 16px; background: #fff; box-shadow: 0 24px 80px rgba(17,29,68,.25); }
+.period-modal > header { display: flex; justify-content: space-between; align-items: start; padding: 18px 20px; border-bottom: 1px solid #edf0f6; }
+.period-modal header p { margin: 0 0 5px; color: #596bd0; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.period-modal header h2 { margin: 0; color: #17233b; font-size: 18px; }
+.period-modal header button { border: 0; color: #68738b; background: transparent; font-size: 24px; cursor: pointer; }
+.period-modal form { display: grid; gap: 14px; padding: 18px 20px 20px; }
+.period-form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.period-field { display: grid; gap: 6px; color: #3b4763; font-size: 11px; font-weight: 650; }
+.period-field input { width: 100%; min-height: 38px; border: 1px solid #dce2f0; border-radius: 8px; padding: 0 10px; color: #25304f; background: #fff; font-size: 12px; }
+.period-field input:disabled { color: #7c8498; background: #f4f5f8; }
+.period-edit-note { margin: 0; color: #78839a; font-size: 10px; line-height: 1.5; }
+.period-modal footer { display: flex; justify-content: end; gap: 8px; }
+.ledger-empty .period-action { margin-top: 12px; }
+@media(max-width:550px) { .period-heading-actions { width: 100%; }.period-form-grid { grid-template-columns: 1fr; } }

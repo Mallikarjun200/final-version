@@ -246,6 +246,23 @@ class FiscalYearCreate(BaseModel):
         return self
 
 
+class FiscalPeriodUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    start_date: date
+    end_date: date
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_dates(self):
+        if self.end_date < self.start_date:
+            raise ValueError("Period end date must be on or after its start date.")
+        return self
+
+
 class FiscalPeriodOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1293,6 +1310,95 @@ def list_fiscal_periods(
         .order_by(FiscalYear.start_date.desc(), FiscalPeriod.period_number)
     ).all()
     return [serialize_fiscal_period_detail(period, year) for period, year in rows]
+
+
+@app.patch("/api/fiscal-periods/{period_id}", response_model=FiscalPeriodDetailOut)
+def update_fiscal_period(
+    period_id: int,
+    payload: FiscalPeriodUpdate,
+    _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.execute(
+        select(FiscalPeriod, FiscalYear)
+        .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
+        .where(FiscalPeriod.id == period_id)
+        .with_for_update()
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Fiscal period not found.")
+    period, year = row
+    if payload.start_date < year.start_date or payload.end_date > year.end_date:
+        raise HTTPException(status_code=422, detail="Period dates must stay within the fiscal year.")
+    if period.period_number == 1 and payload.start_date != year.start_date:
+        raise HTTPException(status_code=422, detail="The first period must begin on the fiscal-year start date.")
+    if period.period_number == year.period_count and payload.end_date != year.end_date:
+        raise HTTPException(status_code=422, detail="The final period must end on the fiscal-year end date.")
+
+    previous = None
+    following = None
+    if period.period_number > 1:
+        previous = db.scalar(
+            select(FiscalPeriod)
+            .where(
+                FiscalPeriod.fiscal_year_id == year.id,
+                FiscalPeriod.period_number == period.period_number - 1,
+            )
+            .with_for_update()
+        )
+    if period.period_number < year.period_count:
+        following = db.scalar(
+            select(FiscalPeriod)
+            .where(
+                FiscalPeriod.fiscal_year_id == year.id,
+                FiscalPeriod.period_number == period.period_number + 1,
+            )
+            .with_for_update()
+        )
+
+    new_previous_end = payload.start_date - timedelta(days=1) if previous else None
+    new_following_start = payload.end_date + timedelta(days=1) if following else None
+    if previous and new_previous_end != previous.end_date and (
+        new_previous_end < previous.start_date or previous.status != "OPEN"
+    ):
+        raise HTTPException(status_code=409, detail="The preceding period must be open and retain at least one day.")
+    if following and new_following_start != following.start_date and (
+        new_following_start > following.end_date or following.status != "OPEN"
+    ):
+        raise HTTPException(status_code=409, detail="The following period must be open and retain at least one day.")
+    if period.status != "OPEN" and (
+        payload.start_date != period.start_date or payload.end_date != period.end_date
+    ):
+        raise HTTPException(status_code=409, detail="Reopen the period before changing its dates.")
+
+    shifted_boundaries = []
+    if previous and new_previous_end != previous.end_date:
+        shifted_boundaries.append((previous.end_date, new_previous_end))
+    if following and new_following_start != following.start_date:
+        shifted_boundaries.append((following.start_date - timedelta(days=1), payload.end_date))
+    for old_boundary, new_boundary in shifted_boundaries:
+        first_date = min(old_boundary, new_boundary) + timedelta(days=1)
+        last_date = max(old_boundary, new_boundary)
+        if db.scalar(
+            select(LedgerEntry.id)
+            .where(LedgerEntry.posting_date.between(first_date, last_date))
+            .limit(1)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Period dates cannot move across dates that already contain posted ledger entries.",
+            )
+
+    period.name = payload.name
+    period.start_date = payload.start_date
+    period.end_date = payload.end_date
+    if previous and new_previous_end is not None:
+        previous.end_date = new_previous_end
+    if following and new_following_start is not None:
+        following.start_date = new_following_start
+
+    db.commit()
+    return serialize_fiscal_period_detail(period, year)
 
 
 @app.post("/api/fiscal-periods/{period_id}/close", response_model=FiscalPeriodDetailOut)
