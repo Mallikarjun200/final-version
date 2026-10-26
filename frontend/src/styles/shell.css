@@ -173,6 +173,9 @@
   border: 0; background: transparent; color: #4a5778; padding: 2px 4px; border-radius: 12px;
 }
 .user:hover { background: rgba(255, 255, 255, 0.5); }
+.logout-control { display: grid; justify-items: end; gap: 3px; }
+.logout-control small { color: #a62633; font-size: 10px; }
+.logout-btn { border: 1px solid rgba(80, 95, 140, .2); border-radius: 8px; padding: 6px 9px; color: #465575; background: rgba(255,255,255,.7); font-size: 10px; cursor: pointer; }
 .avatar {
   width: 32px; height: 32px; border-radius: 50%;
   display: grid; place-items: center;

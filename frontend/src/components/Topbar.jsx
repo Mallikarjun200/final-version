@@ -1,6 +1,6 @@
 import Icon from './Icon.jsx'
 
-export default function Topbar({ search, onSearch, onMenu }) {
+export default function Topbar({ search, onSearch, onMenu, user, onLogout, logoutError }) {
   return (
     <header className="topbar glass">
       <button className="icon-btn menu-btn" onClick={onMenu} aria-label="Open menu">
@@ -29,14 +29,17 @@ export default function Topbar({ search, onSearch, onMenu }) {
           <span className="bell-badge">9</span>
         </button>
 
-        <button className="user" aria-label="Account menu">
-          <span className="avatar">JD</span>
+        <div className="user">
+          <span className="avatar">{user?.display_name?.slice(0, 2).toUpperCase() || 'U'}</span>
           <span className="user-text">
-            <b>John Doe</b>
-            <small>Approver</small>
+            <b>{user?.display_name || 'Workspace user'}</b>
+            <small>{user?.email || ''}</small>
           </span>
-          <Icon name="ChevronDown" size={14} />
-        </button>
+        </div>
+        <div className="logout-control">
+          {logoutError && <small role="alert">{logoutError}</small>}
+          <button className="logout-btn" onClick={onLogout}>Sign out</button>
+        </div>
       </div>
     </header>
   )

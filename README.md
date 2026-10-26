@@ -1,6 +1,6 @@
 # Stackly OneERP — Fiscal Year
 
-Stackly OneERP includes a React/Vite frontend and a Python FastAPI API for FICO fiscal-year management. Fiscal years automatically create twelve accounting periods and begin in `DRAFT` status.
+Stackly OneERP includes a React/Vite frontend and a Python FastAPI API for FICO management. Fiscal years automatically create twelve accounting periods and begin in `DRAFT` status. Users can register and sign in; module records are saved in the database and scoped to the signed-in account.
 
 ## Open the complete app in one browser tab
 
@@ -26,6 +26,12 @@ npm run dev
 Run this command from the project root. Vite proxies `/api` and `/health` requests to FastAPI at `127.0.0.1:8000`; start the API separately in another terminal with `npm run api` (or the `uvicorn` command above).
 
 The API defaults to a local SQLite database (`stackly_oneerp.db`) and creates its tables on startup. To use MySQL, set `DATABASE_URL` to a SQLAlchemy URL such as `mysql+pymysql://user:password@localhost:3306/stackly_oneerp` and initialize the schema with `database/schema.sql`.
+
+## Sign-in and modules
+
+Open the app and choose **Create an account** on the login page. Passwords are stored as salted PBKDF2 hashes; sign-in uses a seven-day, HTTP-only session cookie. Sign out revokes the stored session. Set `COOKIE_SECURE=true` when serving over HTTPS.
+
+Company, Fiscal Period, Chart of Accounts, Journal Entry, General Ledger, Accounts Payable, Accounts Receivable, Fixed Assets, Budgeting, GST, and Financial Reports have account-scoped create, view, edit, and delete records. Fiscal Year retains its calendar validation and automatic period creation. Trial Balance remains a sample-data report. The generic module records are persistent CRUD workspaces, not a substitute for accounting posting, tax, payment, or financial-statement calculations; those workflows require agreed business rules.
 
 ## Fiscal-year workflow
 

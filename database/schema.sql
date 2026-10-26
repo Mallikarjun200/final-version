@@ -42,3 +42,35 @@ CREATE TABLE IF NOT EXISTS fiscal_periods (
   CONSTRAINT ck_fiscal_period_dates CHECK (start_date <= end_date),
   CONSTRAINT ck_fiscal_period_status CHECK (status IN ('OPEN', 'CLOSED'))
 );
+
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(254) NOT NULL UNIQUE,
+  display_name VARCHAR(100) NOT NULL,
+  password_hash VARCHAR(256) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  token_hash CHAR(64) NOT NULL UNIQUE,
+  user_id INT NOT NULL,
+  expires_at DATETIME NOT NULL,
+  CONSTRAINT fk_auth_session_user FOREIGN KEY (user_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  INDEX ix_auth_sessions_user (user_id)
+);
+
+CREATE TABLE IF NOT EXISTS module_records (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_id INT NOT NULL,
+  module_id VARCHAR(40) NOT NULL,
+  name VARCHAR(160) NOT NULL,
+  status VARCHAR(40) NOT NULL DEFAULT 'Draft',
+  data JSON NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_module_record_owner FOREIGN KEY (owner_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  INDEX ix_module_records_owner_module (owner_id, module_id)
+);
