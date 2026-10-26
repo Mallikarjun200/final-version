@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -163,6 +164,77 @@ def test_registration_and_login_use_http_only_session_cookie(test_client):
     assert response.json()["user"]["email"] == "tester@example.com"
     assert "httponly" in response.headers["set-cookie"].lower()
     assert test_client.get("/api/auth/me").json()["display_name"] == "Test User"
+
+
+def test_forgot_password_sends_single_use_reset_link_and_revokes_sessions(test_client, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    monkeypatch.setenv("SMTP_FROM_EMAIL", "accounts@example.com")
+    monkeypatch.delenv("SMTP_USERNAME", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.setenv("APP_BASE_URL", "https://stackly.example.com")
+    existing_session = test_client.cookies.get("stackly_session")
+    sent_emails = []
+    monkeypatch.setattr(
+        main,
+        "send_password_reset_email",
+        lambda recipient, reset_url, mail_config: sent_emails.append((recipient, reset_url)),
+    )
+
+    requested = test_client.post(
+        "/api/auth/forgot-password",
+        json={"email": " TESTER@example.com "},
+    )
+    assert requested.status_code == 200
+    assert requested.json()["message"] == "If an account exists for that email, reset instructions will be sent."
+    assert len(sent_emails) == 1
+    recipient, reset_url = sent_emails[0]
+    assert recipient == "tester@example.com"
+    assert urlparse(reset_url).scheme == "https"
+    token = parse_qs(urlparse(reset_url).query)["reset_token"][0]
+
+    throttled = test_client.post(
+        "/api/auth/forgot-password",
+        json={"email": "tester@example.com"},
+    )
+    assert throttled.status_code == 200
+    assert len(sent_emails) == 1
+
+    reset = test_client.post(
+        "/api/auth/reset-password",
+        json={"token": token, "password": "a-new-secure-password"},
+    )
+    assert reset.status_code == 200
+    test_client.cookies.set("stackly_session", existing_session)
+    assert test_client.get("/api/auth/me").status_code == 401
+
+    replay = test_client.post(
+        "/api/auth/reset-password",
+        json={"token": token, "password": "another-new-password"},
+    )
+    assert replay.status_code == 400
+    login = test_client.post(
+        "/api/auth/login",
+        json={"email": "tester@example.com", "password": "a-new-secure-password"},
+    )
+    assert login.status_code == 200
+
+
+def test_forgot_password_requires_email_configuration_for_all_addresses(test_client, monkeypatch):
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.delenv("SMTP_FROM_EMAIL", raising=False)
+
+    known_account = test_client.post(
+        "/api/auth/forgot-password",
+        json={"email": "tester@example.com"},
+    )
+    unknown_account = test_client.post(
+        "/api/auth/forgot-password",
+        json={"email": "unknown@example.com"},
+    )
+
+    assert known_account.status_code == unknown_account.status_code == 503
+    assert known_account.json() == unknown_account.json()
 
 
 def test_registration_rejects_duplicate_email(test_client):

@@ -1,17 +1,22 @@
 import calendar
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
+import smtplib
+import ssl
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -52,6 +57,7 @@ engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+logger = logging.getLogger(__name__)
 
 
 class FiscalYear(Base):
@@ -113,6 +119,18 @@ class AuthSession(Base):
     token_hash = Column(String(64), nullable=False, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    __table_args__ = (Index("ix_password_reset_user_created", "user_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
 
 
 class WorkspaceMember(Base):
@@ -348,6 +366,20 @@ class LoginIn(BaseModel):
     @classmethod
     def normalize_email(cls, value):
         return value.strip().lower() if isinstance(value, str) else value
+
+
+class ForgotPasswordIn(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class ResetPasswordIn(BaseModel):
+    token: str = Field(min_length=20, max_length=128)
+    password: str = Field(min_length=10, max_length=128)
 
 
 class UserOut(BaseModel):
@@ -660,6 +692,94 @@ def verify_password(password: str, encoded: str) -> bool:
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(actual, expected)
+
+
+def utc_naive_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def password_reset_mail_config() -> dict[str, str | int]:
+    host = os.getenv("SMTP_HOST", "").strip()
+    sender = os.getenv("SMTP_FROM_EMAIL", "").strip()
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    if not host or not sender:
+        raise HTTPException(
+            status_code=503,
+            detail="Password reset email is not configured. Set SMTP_HOST and SMTP_FROM_EMAIL.",
+        )
+    if bool(username) != bool(password):
+        raise HTTPException(
+            status_code=503,
+            detail="Password reset email is misconfigured. Set both SMTP_USERNAME and SMTP_PASSWORD.",
+        )
+    try:
+        port = int(os.getenv("SMTP_PORT", "587"))
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail="SMTP_PORT must be a valid port number.") from error
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=503, detail="SMTP_PORT must be a valid port number.")
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "sender": sender,
+        "app_base_url": os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/"),
+    }
+
+
+def send_password_reset_email(
+    recipient: str,
+    reset_url: str,
+    mail_config: dict[str, str | int],
+) -> None:
+    message = EmailMessage()
+    message["Subject"] = "Reset your Stackly OneERP password"
+    message["From"] = str(mail_config["sender"])
+    message["To"] = recipient
+    message.set_content(
+        "We received a request to reset your Stackly OneERP password.\n\n"
+        f"Use this link within 30 minutes to choose a new password:\n{reset_url}\n\n"
+        "If you did not request a reset, you can ignore this email."
+    )
+    host = str(mail_config["host"])
+    port = int(mail_config["port"])
+    username = str(mail_config["username"])
+    password = str(mail_config["password"])
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, timeout=10, context=ssl.create_default_context()) as server:
+            if username:
+                server.login(username, password)
+            server.send_message(message)
+        return
+    with smtplib.SMTP(host, port, timeout=10) as server:
+        server.ehlo()
+        server.starttls(context=ssl.create_default_context())
+        server.ehlo()
+        if username:
+            server.login(username, password)
+        server.send_message(message)
+
+
+def deliver_password_reset_email(
+    recipient: str,
+    reset_url: str,
+    mail_config: dict[str, str | int],
+    reset_token_id: int,
+) -> None:
+    try:
+        send_password_reset_email(recipient, reset_url, mail_config)
+    except (OSError, smtplib.SMTPException):
+        logger.exception("Failed to send a password reset email.")
+        db = SessionLocal()
+        try:
+            reset_record = db.get(PasswordResetToken, reset_token_id)
+            if reset_record:
+                db.delete(reset_record)
+                db.commit()
+        finally:
+            db.close()
 
 
 def create_session(db: Session, user: User) -> str:
@@ -1420,6 +1540,92 @@ def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
         path="/",
     )
     return AuthOut(user=user)
+
+
+@app.post("/api/auth/forgot-password")
+def forgot_password(
+    payload: ForgotPasswordIn,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    mail_config = password_reset_mail_config()
+    user = db.scalar(select(User).where(User.email == payload.email))
+    generic_message = "If an account exists for that email, reset instructions will be sent."
+    if user is None:
+        return {"message": generic_message}
+
+    now = utc_naive_now()
+    recent_request = db.scalar(
+        select(PasswordResetToken.id).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.created_at >= now - timedelta(minutes=1),
+        )
+    )
+    if recent_request:
+        return {"message": generic_message}
+
+    token = secrets.token_urlsafe(32)
+    reset_record = PasswordResetToken(
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        user_id=user.id,
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+    for previous_token in db.scalars(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        )
+    ):
+        previous_token.used_at = now
+    db.add(reset_record)
+    db.commit()
+
+    reset_url = f"{mail_config['app_base_url']}/?reset_token={quote(token, safe='')}"
+    background_tasks.add_task(
+        deliver_password_reset_email,
+        user.email,
+        reset_url,
+        mail_config,
+        reset_record.id,
+    )
+    return {"message": generic_message}
+
+
+@app.post("/api/auth/reset-password")
+def reset_password(
+    payload: ResetPasswordIn,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    token_hash = hashlib.sha256(payload.token.encode()).hexdigest()
+    reset_record = db.scalar(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    )
+    now = utc_naive_now()
+    if (
+        reset_record is None
+        or reset_record.used_at is not None
+        or reset_record.expires_at <= now
+    ):
+        raise HTTPException(status_code=400, detail="This password reset link is invalid or has expired.")
+
+    user = db.get(User, reset_record.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="This password reset link is invalid or has expired.")
+    user.password_hash = hash_password(payload.password)
+    for active_token in db.scalars(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        )
+    ):
+        active_token.used_at = now
+    for auth_session in db.scalars(select(AuthSession).where(AuthSession.user_id == user.id)):
+        db.delete(auth_session)
+    db.commit()
+    response.delete_cookie("stackly_session", path="/", httponly=True, samesite="lax")
+    return {"message": "Your password has been reset. Please sign in with your new password."}
 
 
 @app.get("/api/auth/me", response_model=UserOut)

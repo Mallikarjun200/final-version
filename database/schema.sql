@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   INDEX ix_auth_sessions_user (user_id)
 );
 
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  token_hash CHAR(64) NOT NULL UNIQUE,
+  user_id INT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME,
+  CONSTRAINT fk_password_reset_user FOREIGN KEY (user_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  INDEX ix_password_reset_user_created (user_id, created_at),
+  INDEX ix_password_reset_tokens_user_id (user_id)
+);
+
 CREATE TABLE IF NOT EXISTS workspace_members (
   id INT AUTO_INCREMENT PRIMARY KEY,
   owner_user_id INT NOT NULL,
