@@ -185,6 +185,32 @@
 .user-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
 .user-text b { font-size: 12.5px; color: var(--navy); font-weight: 600; }
 .user-text small { font-size: 10.5px; color: var(--muted); }
+.workspace-select { display: grid; gap: 2px; color: #596bd0; font-size: 9px; font-weight: 700; }
+.workspace-select select { max-width: 180px; border: 1px solid #dce3f2; border-radius: 8px; padding: 6px 8px; color: #465575; background: rgba(255,255,255,.8); font-size: 10px; }
+.workspace-members-btn { border: 1px solid #dce3f2; border-radius: 8px; padding: 7px 10px; color: #435fd4; background: rgba(255,255,255,.85); font-size: 10px; font-weight: 700; }
+.workspace-members-btn:disabled { opacity: .55; cursor: wait; }
+.workspace-modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(25,35,66,.42); }
+.workspace-modal { width: min(100%, 520px); max-height: min(90vh, 760px); overflow-y: auto; border-radius: 18px; padding: 18px 20px; background: #fff; box-shadow: 0 24px 80px rgba(17,29,68,.25); }
+.workspace-modal > header { display: flex; align-items: start; justify-content: space-between; margin: -18px -20px 16px; padding: 18px 20px; border-bottom: 1px solid #edf0f6; }
+.workspace-modal > header p { margin: 0 0 5px; color: #596bd0; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.workspace-modal > header h2 { color: #17233b; font-size: 17px; }
+.workspace-modal > header button { border: 0; color: #68738b; background: transparent; font-size: 24px; }
+.workspace-modal form { display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 9px; }
+.workspace-member-field { display: grid; gap: 5px; color: #3b4763; font-size: 10px; font-weight: 650; }
+.workspace-member-field input, .workspace-member-field select { min-height: 36px; border: 1px solid #dce2f0; border-radius: 8px; padding: 0 9px; color: #25304f; background: #fff; font-size: 11px; }
+.workspace-modal-error, .workspace-modal-notice { margin-top: 10px; border-radius: 8px; padding: 9px 10px; font-size: 11px; }
+.workspace-modal-error { border: 1px solid #f1c4c8; color: #a62633; background: #fff1f1; }
+.workspace-modal-notice { border: 1px solid #bee6d0; color: #14754e; background: #eaf8f0; }
+.workspace-member-list { display: grid; gap: 7px; margin-top: 18px; }
+.workspace-member-list h3 { color: #263452; font-size: 12px; }
+.workspace-member-list > p { color: #78839a; font-size: 11px; }
+.workspace-member-row { display: flex; align-items: center; gap: 10px; border: 1px solid #edf0f6; border-radius: 9px; padding: 8px 10px; }
+.workspace-member-row > span:first-child { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.workspace-member-row b { color: #25304f; font-size: 11px; }
+.workspace-member-row small { overflow: hidden; color: #78839a; font-size: 10px; text-overflow: ellipsis; }
+.workspace-member-role { color: #596bd0; font-size: 10px; font-weight: 700; text-transform: capitalize; }
+.workspace-member-row button { border: 1px solid #f0c6ca; border-radius: 7px; padding: 5px 7px; color: #a62633; background: #fff; font-size: 9px; }
+.workspace-modal-note { margin-top: 14px; color: #78839a; font-size: 10px; line-height: 1.5; }
 .menu-btn { display: none; }
 
 /* ---------- Dashboard layout ---------- */
@@ -268,6 +294,15 @@
 .setup-heading p { margin: 0 0 5px; color: #596bd0; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
 .setup-heading h2 { margin: 0; color: var(--navy); font-size: 15px; }
 .setup-heading span { display: block; margin-top: 5px; color: var(--muted); font-size: 11.5px; }
+.approvals-inbox { border: 1px solid rgba(239, 180, 77, .55); }
+.approvals-inbox .card-head { margin-bottom: 8px; }
+.approvals-inbox .card-head span { color: #9a6815; font-size: 10px; font-weight: 700; }
+.approvals-inbox-list { display: grid; gap: 6px; }
+.approvals-inbox-list button { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #edf0f6; border-radius: 9px; padding: 9px 11px; color: #4a5778; background: rgba(255,255,255,.75); text-align: left; }
+.approvals-inbox-list button:hover { border-color: #b7c4f4; background: #fff; }
+.approvals-inbox-list button span { display: grid; gap: 3px; }
+.approvals-inbox-list button b { color: #25304f; font-size: 11px; }
+.approvals-inbox-list button small { color: #78839a; font-size: 10px; }
 .setup-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
 .setup-step { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px; border: 1px solid #e2e8f5; border-radius: 11px; background: rgba(255,255,255,.76); }
 .setup-step-number { display: grid; flex: 0 0 25px; width: 25px; height: 25px; place-items: center; border-radius: 50%; color: #fff; background: #7281df; font-size: 11px; font-weight: 800; }
@@ -409,6 +444,10 @@
 }
 
 @media (max-width: 600px) {
+  .workspace-modal form { grid-template-columns: 1fr 1fr; }
+  .workspace-modal form .workspace-member-field:first-child { grid-column: 1 / -1; }
+  .workspace-modal form button { grid-column: 1 / -1; }
+  .workspace-select select { max-width: 120px; }
   .dash-side { grid-template-columns: minmax(0, 1fr); }
   .module-grid { grid-template-columns: minmax(0, 1fr); }
   .page-title h1 { font-size: 19px; }

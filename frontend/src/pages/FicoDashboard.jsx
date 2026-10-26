@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '../api.js'
 import Icon from '../components/Icon.jsx'
 import {
   ficoModules, inr, kpis, quickActions,
 } from '../data/ficoData.js'
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 const statusClass = {
   Posted: 'ok',
@@ -14,9 +13,7 @@ const statusClass = {
 }
 
 async function fetchDashboard(period) {
-  const response = await fetch(`${API_BASE}/api/accounting/dashboard-summary?period=${encodeURIComponent(period)}`, {
-    credentials: 'include',
-  })
+  const response = await apiFetch(`/api/accounting/dashboard-summary?period=${encodeURIComponent(period)}`)
   const data = await response.json()
   if (!response.ok) {
     throw new Error(typeof data?.detail === 'string' ? data.detail : `Dashboard request failed (${response.status}).`)
@@ -28,6 +25,8 @@ export default function FicoDashboard({ onNavigate, search }) {
   const [range, setRange] = useState('This Year')
   const [dashboard, setDashboard] = useState(null)
   const [dashboardError, setDashboardError] = useState('')
+  const [pendingApprovals, setPendingApprovals] = useState([])
+  const [approvalError, setApprovalError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -41,6 +40,24 @@ export default function FicoDashboard({ onNavigate, search }) {
       .catch((error) => { if (!cancelled) setDashboardError(error.message) })
     return () => { cancelled = true }
   }, [range])
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch('/api/approvals/pending')
+      .then(async (response) => {
+        const data = await response.json()
+        if (!response.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : `Approval request failed (${response.status}).`)
+        return data
+      })
+      .then((items) => {
+        if (!cancelled) {
+          setPendingApprovals(items)
+          setApprovalError('')
+        }
+      })
+      .catch((error) => { if (!cancelled) setApprovalError(error.message) })
+    return () => { cancelled = true }
+  }, [])
 
   const rows = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -61,6 +78,7 @@ export default function FicoDashboard({ onNavigate, search }) {
     <div className="dash">
       <div className="dash-main">
         {dashboardError && <div className="wb-error" role="alert">{dashboardError}</div>}
+        {approvalError && <div className="wb-error" role="alert">{approvalError}</div>}
         <div className="page-title">
           <h1>FICO - Financial Accounting</h1>
           <p>Manage your company&apos;s financial transactions and reports</p>
@@ -103,6 +121,20 @@ export default function FicoDashboard({ onNavigate, search }) {
               ))}
             </div>
             <p className="setup-note">After setup, create a draft in Journal Entry, AP, or AR and choose <b>Post</b> to update the General Ledger and Trial Balance.</p>
+          </section>
+        )}
+
+        {pendingApprovals.length > 0 && (
+          <section className="card glass approvals-inbox" aria-label="Pending approvals">
+            <div className="card-head"><h2>Pending approvals</h2><span>{pendingApprovals.length} awaiting review</span></div>
+            <div className="approvals-inbox-list">
+              {pendingApprovals.slice(0, 5).map((record) => (
+                <button key={`${record.module_id}-${record.id}`} onClick={() => onNavigate(record.module_id)}>
+                  <span><b>{record.name}</b><small>{ficoModules.find((item) => item.id === record.module_id)?.title || record.module_id}</small></span>
+                  <Icon name="ChevronRight" size={16} />
+                </button>
+              ))}
+            </div>
           </section>
         )}
 

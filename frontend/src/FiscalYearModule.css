@@ -154,6 +154,7 @@ button, input, select, textarea { font: inherit; }
 .fy-page-head h1 { margin: 0; color: #182236; font-size: 27px; font-weight: 740; letter-spacing: -.9px; }
 .fy-title-dot { color: #766be0; }
 .fy-page-head p { margin: 8px 0 0; color: #7c8799; font-size: 12px; line-height: 1.6; }
+.fy-page-head .fy-readonly-note { max-width: 280px; margin: 0; padding: 9px 12px; border: 1px solid #dce6fa; border-radius: 8px; color: #345b92; background: #eff5ff; }
 .fy-primary, .fy-outline, .fy-refresh {
   min-height: 38px;
   display: inline-flex;

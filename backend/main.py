@@ -5,12 +5,13 @@ import os
 import re
 import secrets
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -30,7 +31,9 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    inspect,
     select,
+    text,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, declarative_base, relationship, selectinload, sessionmaker
@@ -54,8 +57,8 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 class FiscalYear(Base):
     __tablename__ = "fiscal_years"
     __table_args__ = (
-        UniqueConstraint("company_code", "code", name="uq_fiscal_year_company_code"),
-        UniqueConstraint("active_company_code", name="uq_fiscal_year_active_company"),
+        UniqueConstraint("owner_id", "company_code", "code", name="uq_fiscal_year_company_code"),
+        UniqueConstraint("owner_id", "active_company_code", name="uq_fiscal_year_active_company"),
         CheckConstraint("start_date < end_date", name="ck_fiscal_year_dates"),
         CheckConstraint("variant IN ('APR_MAR', 'JAN_DEC')", name="ck_fiscal_year_variant"),
         CheckConstraint("status IN ('DRAFT', 'ACTIVE')", name="ck_fiscal_year_status"),
@@ -64,6 +67,7 @@ class FiscalYear(Base):
     )
 
     id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     company_code = Column(String(30), nullable=False)
     code = Column(String(20), nullable=False)
     name = Column(String(100), nullable=False)
@@ -109,6 +113,20 @@ class AuthSession(Base):
     token_hash = Column(String(64), nullable=False, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "member_user_id", name="uq_workspace_member"),
+        CheckConstraint("role IN ('admin', 'requester', 'approver')", name="ck_workspace_member_role"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    member_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class ModuleRecord(Base):
@@ -179,6 +197,22 @@ class InvoiceSettlement(Base):
     amount_minor = Column(BigInteger, nullable=False)
     cash_account_code = Column(String(40), nullable=False)
     cash_account_name = Column(String(160), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class ApprovalEvent(Base):
+    __tablename__ = "approval_events"
+    __table_args__ = (
+        Index("ix_approval_record_history", "workspace_owner_id", "module_id", "record_id", "id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    workspace_owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    module_id = Column(String(40), nullable=False)
+    record_id = Column(Integer, ForeignKey("module_records.id", ondelete="CASCADE"), nullable=False)
+    actor_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    action = Column(String(20), nullable=False)
+    comment = Column(String(500), nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
@@ -322,6 +356,48 @@ class UserOut(BaseModel):
     id: int
     email: str
     display_name: str
+
+
+class WorkspaceOut(BaseModel):
+    id: int
+    name: str
+    role: Literal["admin", "requester", "approver"]
+
+
+class WorkspaceMemberCreate(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    role: Literal["requester", "approver", "admin"]
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class WorkspaceMemberOut(BaseModel):
+    user_id: int
+    email: str
+    display_name: str
+    role: Literal["admin", "requester", "approver"]
+
+
+class ApprovalActionIn(BaseModel):
+    action: Literal["approve", "reject"]
+    comment: str | None = Field(default=None, max_length=500)
+
+    @field_validator("comment", mode="before")
+    @classmethod
+    def strip_comment(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class ApprovalEventOut(BaseModel):
+    id: int
+    action: str
+    comment: str | None
+    created_at: datetime
+    actor_email: str
+    actor_name: str
 
 
 class AuthOut(BaseModel):
@@ -521,6 +597,15 @@ def get_db():
         session.close()
 
 
+@dataclass(frozen=True)
+class WorkspaceUser:
+    id: int
+    actor_id: int
+    email: str
+    display_name: str
+    role: str
+
+
 PASSWORD_ITERATIONS = 310_000
 SESSION_LIFETIME = timedelta(days=7)
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -538,6 +623,7 @@ MODULE_IDS = {
     "gst",
     "financial-reports",
 }
+APPROVAL_MODULES = {"journal-entry", "ap", "ar", "fixed-assets", "budgeting"}
 
 
 def hash_password(password: str) -> str:
@@ -568,7 +654,7 @@ def create_session(db: Session, user: User) -> str:
     return token
 
 
-def get_current_user(
+def get_authenticated_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
@@ -589,6 +675,60 @@ def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="User account not found.")
     return user
+
+
+def get_current_user(
+    user: User = Depends(get_authenticated_user),
+    workspace_id: int | None = Header(default=None, alias="X-Workspace-ID"),
+    db: Session = Depends(get_db),
+) -> WorkspaceUser:
+    memberships = db.scalars(
+        select(WorkspaceMember).where(WorkspaceMember.member_user_id == user.id)
+    ).all()
+    if not memberships:
+        membership = WorkspaceMember(
+            owner_user_id=user.id,
+            member_user_id=user.id,
+            role="admin",
+        )
+        db.add(membership)
+        db.commit()
+        memberships = [membership]
+
+    if workspace_id is None:
+        if len(memberships) != 1:
+            raise HTTPException(status_code=409, detail="Select a workspace before continuing.")
+        membership = memberships[0]
+    else:
+        membership = next((item for item in memberships if item.owner_user_id == workspace_id), None)
+        if membership is None:
+            raise HTTPException(status_code=403, detail="You do not have access to this workspace.")
+
+    return WorkspaceUser(
+        id=membership.owner_user_id,
+        actor_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        role=membership.role,
+    )
+
+
+def require_workspace_role(user: WorkspaceUser, *roles: str) -> None:
+    if user.role not in roles:
+        raise HTTPException(status_code=403, detail="Your workspace role does not allow this action.")
+
+
+def has_approval_event(db: Session, owner_id: int, module_id: str, record_id: int) -> bool:
+    return db.scalar(
+        select(ApprovalEvent.id)
+        .where(
+            ApprovalEvent.workspace_owner_id == owner_id,
+            ApprovalEvent.module_id == module_id,
+            ApprovalEvent.record_id == record_id,
+            ApprovalEvent.action == "approve",
+        )
+        .limit(1)
+    ) is not None
 
 
 def parse_posting_date(value: object) -> date:
@@ -1020,11 +1160,15 @@ def get_trial_balance(
     )
 
 
-def require_open_period(db: Session, posting_date: date) -> None:
+def require_open_period(db: Session, owner_id: int, posting_date: date) -> None:
     period = db.execute(
         select(FiscalPeriod, FiscalYear)
         .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
-        .where(FiscalPeriod.start_date <= posting_date, FiscalPeriod.end_date >= posting_date)
+        .where(
+            FiscalYear.owner_id == owner_id,
+            FiscalPeriod.start_date <= posting_date,
+            FiscalPeriod.end_date >= posting_date,
+        )
     ).first()
     if period is None:
         raise HTTPException(status_code=422, detail="Posting date is outside a configured fiscal period.")
@@ -1035,9 +1179,159 @@ def require_open_period(db: Session, posting_date: date) -> None:
         raise HTTPException(status_code=409, detail="The fiscal period for this posting date is closed.")
 
 
+def migrate_fiscal_year_workspace_constraints() -> None:
+    dialect = engine.dialect.name
+    if dialect == "sqlite":
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
+            with connection.begin():
+                connection.exec_driver_sql(
+                    """
+                    CREATE TABLE fiscal_years_new (
+                        id INTEGER PRIMARY KEY,
+                        owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                        company_code VARCHAR(30) NOT NULL,
+                        code VARCHAR(20) NOT NULL,
+                        name VARCHAR(100) NOT NULL,
+                        variant VARCHAR(20) NOT NULL,
+                        start_date DATE NOT NULL,
+                        end_date DATE NOT NULL,
+                        period_count INTEGER NOT NULL DEFAULT 12,
+                        description VARCHAR(500),
+                        status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+                        active_company_code VARCHAR(30)
+                            GENERATED ALWAYS AS (CASE WHEN status = 'ACTIVE' THEN company_code ELSE NULL END) STORED,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        CONSTRAINT uq_fiscal_year_company_code UNIQUE (owner_id, company_code, code),
+                        CONSTRAINT uq_fiscal_year_active_company UNIQUE (owner_id, active_company_code),
+                        CONSTRAINT ck_fiscal_year_dates CHECK (start_date < end_date),
+                        CONSTRAINT ck_fiscal_year_variant CHECK (variant IN ('APR_MAR', 'JAN_DEC')),
+                        CONSTRAINT ck_fiscal_year_status CHECK (status IN ('DRAFT', 'ACTIVE')),
+                        CONSTRAINT ck_fiscal_year_period_count CHECK (period_count = 12)
+                    )
+                    """
+                )
+                connection.exec_driver_sql(
+                    """
+                    INSERT INTO fiscal_years_new (
+                        id, owner_id, company_code, code, name, variant, start_date, end_date,
+                        period_count, description, status, created_at, updated_at
+                    )
+                    SELECT
+                        id, owner_id, company_code, code, name, variant, start_date, end_date,
+                        period_count, description, status, created_at, updated_at
+                    FROM fiscal_years
+                    """
+                )
+                connection.exec_driver_sql("DROP TABLE fiscal_years")
+                connection.exec_driver_sql("ALTER TABLE fiscal_years_new RENAME TO fiscal_years")
+                connection.exec_driver_sql(
+                    "CREATE INDEX ix_fiscal_year_company_dates ON fiscal_years (owner_id, company_code, start_date, end_date)"
+                )
+                connection.exec_driver_sql("CREATE INDEX ix_fiscal_years_owner_id ON fiscal_years (owner_id)")
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
+        return
+
+    if dialect == "postgresql":
+        with engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE fiscal_years DROP CONSTRAINT IF EXISTS uq_fiscal_year_company_code")
+            connection.exec_driver_sql("ALTER TABLE fiscal_years DROP CONSTRAINT IF EXISTS uq_fiscal_year_active_company")
+            connection.exec_driver_sql("ALTER TABLE fiscal_years ADD CONSTRAINT uq_fiscal_year_company_code UNIQUE (owner_id, company_code, code)")
+            connection.exec_driver_sql("ALTER TABLE fiscal_years ADD CONSTRAINT uq_fiscal_year_active_company UNIQUE (owner_id, active_company_code)")
+            connection.exec_driver_sql("DROP INDEX IF EXISTS ix_fiscal_year_company_dates")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_fiscal_year_company_dates ON fiscal_years (owner_id, company_code, start_date, end_date)")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_fiscal_years_owner_id ON fiscal_years (owner_id)")
+        return
+
+    if dialect == "mysql":
+        with engine.begin() as connection:
+            existing_indexes = {
+                index["name"] for index in inspect(engine).get_indexes("fiscal_years")
+            } | {
+                constraint["name"] for constraint in inspect(engine).get_unique_constraints("fiscal_years")
+            }
+            for index_name in (
+                "uq_fiscal_year_company_code",
+                "uq_fiscal_year_active_company",
+                "ix_fiscal_year_company_dates",
+                "ix_fiscal_years_owner_id",
+            ):
+                if index_name in existing_indexes:
+                    connection.exec_driver_sql(f"ALTER TABLE fiscal_years DROP INDEX {index_name}")
+            connection.exec_driver_sql("ALTER TABLE fiscal_years ADD CONSTRAINT uq_fiscal_year_company_code UNIQUE (owner_id, company_code, code)")
+            connection.exec_driver_sql("ALTER TABLE fiscal_years ADD CONSTRAINT uq_fiscal_year_active_company UNIQUE (owner_id, active_company_code)")
+            connection.exec_driver_sql("CREATE INDEX ix_fiscal_year_company_dates ON fiscal_years (owner_id, company_code, start_date, end_date)")
+            connection.exec_driver_sql("CREATE INDEX ix_fiscal_years_owner_id ON fiscal_years (owner_id)")
+        return
+
+    raise RuntimeError(f"Fiscal-year workspace migration is not supported for database dialect {dialect}.")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    fiscal_year_columns = {column["name"] for column in inspector.get_columns("fiscal_years")}
+    needs_workspace_migration = "owner_id" not in fiscal_year_columns
+    legacy_constraints = any(
+        tuple(constraint["column_names"]) in {
+            ("company_code", "code"),
+            ("active_company_code",),
+        }
+        for constraint in inspector.get_unique_constraints("fiscal_years")
+    )
+    needs_workspace_migration = needs_workspace_migration or legacy_constraints
+    if "owner_id" not in fiscal_year_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE fiscal_years ADD COLUMN owner_id INTEGER"))
+    with SessionLocal() as db:
+        users = db.scalars(select(User).order_by(User.id)).all()
+        company_owners: dict[str, set[int]] = {}
+        companies = db.scalars(
+            select(ModuleRecord).where(ModuleRecord.module_id == "company")
+        ).all()
+        for company in companies:
+            company_code = company.data.get("company_code")
+            if isinstance(company_code, str) and company_code.strip():
+                company_owners.setdefault(company_code.strip().upper(), set()).add(company.owner_id)
+        years_without_owner = db.scalars(select(FiscalYear).where(FiscalYear.owner_id.is_(None))).all()
+        for year in years_without_owner:
+            matching_owners = company_owners.get(year.company_code.upper(), set())
+            if len(matching_owners) == 1:
+                year.owner_id = next(iter(matching_owners))
+            elif len(users) == 1:
+                year.owner_id = users[0].id
+            elif matching_owners:
+                raise RuntimeError(
+                    f"Cannot safely assign legacy fiscal year {year.code}: multiple workspaces use company {year.company_code}."
+                )
+            else:
+                raise RuntimeError(
+                    f"Cannot safely assign legacy fiscal year {year.code}; contact support to map it to a workspace."
+                )
+        for user in users:
+            has_membership = db.scalar(
+                select(WorkspaceMember.id)
+                .where(WorkspaceMember.member_user_id == user.id)
+                .limit(1)
+            )
+            if not has_membership:
+                db.add(WorkspaceMember(owner_user_id=user.id, member_user_id=user.id, role="admin"))
+        unreviewed_documents = db.scalars(
+            select(ModuleRecord).where(
+                ModuleRecord.module_id.in_(APPROVAL_MODULES),
+                ModuleRecord.status.in_(("Approved", "In Progress")),
+            )
+        ).all()
+        for record in unreviewed_documents:
+            if not has_approval_event(db, record.owner_id, record.module_id, record.id):
+                record.status = "Draft"
+        db.commit()
+    if needs_workspace_migration:
+        migrate_fiscal_year_workspace_constraints()
     yield
 
 
@@ -1070,6 +1364,7 @@ def register(payload: RegisterIn, response: Response, db: Session = Depends(get_
     )
     db.add(user)
     db.flush()
+    db.add(WorkspaceMember(owner_user_id=user.id, member_user_id=user.id, role="admin"))
     token = create_session(db, user)
     try:
         db.commit()
@@ -1108,7 +1403,7 @@ def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
 
 
 @app.get("/api/auth/me", response_model=UserOut)
-def current_user(user: User = Depends(get_current_user)):
+def current_user(user: User = Depends(get_authenticated_user)):
     return user
 
 
@@ -1130,10 +1425,117 @@ def logout(
     return None
 
 
+@app.get("/api/workspaces", response_model=list[WorkspaceOut])
+def list_workspaces(
+    actor: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    memberships = db.scalars(
+        select(WorkspaceMember)
+        .where(WorkspaceMember.member_user_id == actor.id)
+        .order_by(WorkspaceMember.owner_user_id)
+    ).all()
+    owners = {
+        owner.id: owner
+        for owner in db.scalars(
+            select(User).where(User.id.in_([membership.owner_user_id for membership in memberships]))
+        ).all()
+    }
+    return [
+        WorkspaceOut(
+            id=membership.owner_user_id,
+            name=f"{owners[membership.owner_user_id].display_name}'s workspace",
+            role=membership.role,
+        )
+        for membership in memberships
+        if membership.owner_user_id in owners
+    ]
+
+
+@app.get("/api/workspaces/members", response_model=list[WorkspaceMemberOut])
+def list_workspace_members(
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        select(WorkspaceMember, User)
+        .join(User, User.id == WorkspaceMember.member_user_id)
+        .where(WorkspaceMember.owner_user_id == user.id)
+        .order_by(User.display_name, User.email)
+    ).all()
+    return [
+        WorkspaceMemberOut(
+            user_id=membership.member_user_id,
+            email=member.email,
+            display_name=member.display_name,
+            role=membership.role,
+        )
+        for membership, member in rows
+    ]
+
+
+@app.put("/api/workspaces/members", response_model=WorkspaceMemberOut)
+def upsert_workspace_member(
+    payload: WorkspaceMemberCreate,
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_workspace_role(user, "admin")
+    member = db.scalar(select(User).where(User.email == payload.email))
+    if member is None:
+        raise HTTPException(status_code=404, detail="Register this user before adding them to the workspace.")
+    membership = db.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.owner_user_id == user.id,
+            WorkspaceMember.member_user_id == member.id,
+        )
+    )
+    if membership is None:
+        membership = WorkspaceMember(
+            owner_user_id=user.id,
+            member_user_id=member.id,
+            role=payload.role,
+        )
+        db.add(membership)
+    elif membership.member_user_id != user.id:
+        membership.role = payload.role
+    elif payload.role != "admin":
+        raise HTTPException(status_code=409, detail="The workspace owner must remain an administrator.")
+    db.commit()
+    return WorkspaceMemberOut(
+        user_id=member.id,
+        email=member.email,
+        display_name=member.display_name,
+        role=membership.role,
+    )
+
+
+@app.delete("/api/workspaces/members/{member_id}", status_code=204)
+def remove_workspace_member(
+    member_id: int,
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_workspace_role(user, "admin")
+    membership = db.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.owner_user_id == user.id,
+            WorkspaceMember.member_user_id == member_id,
+        )
+    )
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Workspace member not found.")
+    if member_id == user.id:
+        raise HTTPException(status_code=409, detail="The workspace owner cannot remove themselves.")
+    db.delete(membership)
+    db.commit()
+    return None
+
+
 @app.get("/api/modules/{module_id}/records", response_model=list[ModuleRecordOut])
 def list_module_records(
     module_id: str,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if module_id not in MODULE_IDS:
@@ -1154,11 +1556,17 @@ def list_module_records(
 def create_module_record(
     module_id: str,
     payload: ModuleRecordCreate,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if module_id not in MODULE_IDS:
         raise HTTPException(status_code=404, detail="Module not found.")
+    if module_id in APPROVAL_MODULES:
+        require_workspace_role(user, "admin", "requester", "approver")
+        if payload.status != "Draft":
+            raise HTTPException(status_code=422, detail="Approval documents must be created as drafts.")
+    else:
+        require_workspace_role(user, "admin")
     if module_id in {"journal-entry", "ap", "ar"} and payload.status == "Posted":
         raise HTTPException(status_code=422, detail="Use the Post action to create ledger entries.")
     if module_id == "fixed-assets" and payload.status == "Posted":
@@ -1184,7 +1592,7 @@ def update_module_record(
     module_id: str,
     record_id: int,
     payload: ModuleRecordUpdate,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if module_id not in MODULE_IDS:
@@ -1198,9 +1606,17 @@ def update_module_record(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found.")
-    if record.status == "Posted":
-        raise HTTPException(status_code=409, detail="Posted records are locked against changes.")
     updates = payload.model_dump(exclude_unset=True)
+    if module_id in APPROVAL_MODULES:
+        require_workspace_role(user, "admin", "requester", "approver")
+        if "status" in updates:
+            raise HTTPException(status_code=422, detail="Use the approval workflow to change document status.")
+        if record.status in {"Pending Approval", "Approved", "Posted", "Active"}:
+            raise HTTPException(status_code=409, detail="This document is locked in its current approval state.")
+    else:
+        require_workspace_role(user, "admin")
+        if record.status == "Posted":
+            raise HTTPException(status_code=409, detail="Posted records are locked against changes.")
     if module_id == "chart-of-accounts":
         account_code = str(record.data.get("account_code", "")).strip().upper()
         if db.scalar(
@@ -1244,7 +1660,7 @@ def update_module_record(
 def delete_module_record(
     module_id: str,
     record_id: int,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if module_id not in MODULE_IDS:
@@ -1258,6 +1674,12 @@ def delete_module_record(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found.")
+    if module_id in APPROVAL_MODULES:
+        require_workspace_role(user, "admin", "requester", "approver")
+        if record.status not in {"Draft", "Rejected"}:
+            raise HTTPException(status_code=409, detail="Only drafts and rejected documents can be deleted.")
+    else:
+        require_workspace_role(user, "admin")
     if record.status == "Posted":
         raise HTTPException(status_code=409, detail="Posted records cannot be deleted.")
     if module_id == "chart-of-accounts":
@@ -1284,7 +1706,7 @@ def delete_module_record(
 
 @app.get("/api/accounting/accounts", response_model=list[AccountOptionOut])
 def list_posting_accounts(
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     accounts = get_accounts_by_code(db, user.id)
@@ -1301,12 +1723,13 @@ def list_posting_accounts(
 
 @app.get("/api/fiscal-periods", response_model=list[FiscalPeriodDetailOut])
 def list_fiscal_periods(
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     rows = db.execute(
         select(FiscalPeriod, FiscalYear)
         .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
+        .where(FiscalYear.owner_id == user.id)
         .order_by(FiscalYear.start_date.desc(), FiscalPeriod.period_number)
     ).all()
     return [serialize_fiscal_period_detail(period, year) for period, year in rows]
@@ -1316,13 +1739,14 @@ def list_fiscal_periods(
 def update_fiscal_period(
     period_id: int,
     payload: FiscalPeriodUpdate,
-    _user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    require_workspace_role(user, "admin")
     row = db.execute(
         select(FiscalPeriod, FiscalYear)
         .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
-        .where(FiscalPeriod.id == period_id)
+        .where(FiscalPeriod.id == period_id, FiscalYear.owner_id == user.id)
         .with_for_update()
     ).first()
     if row is None:
@@ -1381,7 +1805,10 @@ def update_fiscal_period(
         last_date = max(old_boundary, new_boundary)
         if db.scalar(
             select(LedgerEntry.id)
-            .where(LedgerEntry.posting_date.between(first_date, last_date))
+            .where(
+                LedgerEntry.owner_id == user.id,
+                LedgerEntry.posting_date.between(first_date, last_date),
+            )
             .limit(1)
         ):
             raise HTTPException(
@@ -1401,21 +1828,171 @@ def update_fiscal_period(
     return serialize_fiscal_period_detail(period, year)
 
 
+@app.get("/api/approvals/pending", response_model=list[ModuleRecordOut])
+def pending_approvals(
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return db.scalars(
+        select(ModuleRecord)
+        .where(
+            ModuleRecord.owner_id == user.id,
+            ModuleRecord.module_id.in_(APPROVAL_MODULES),
+            ModuleRecord.status == "Pending Approval",
+        )
+        .order_by(ModuleRecord.updated_at, ModuleRecord.id)
+    ).all()
+
+
+@app.get(
+    "/api/modules/{module_id}/records/{record_id}/approvals",
+    response_model=list[ApprovalEventOut],
+)
+def approval_history(
+    module_id: str,
+    record_id: int,
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if module_id not in APPROVAL_MODULES:
+        raise HTTPException(status_code=404, detail="This module does not use approvals.")
+    record = db.scalar(
+        select(ModuleRecord).where(
+            ModuleRecord.id == record_id,
+            ModuleRecord.owner_id == user.id,
+            ModuleRecord.module_id == module_id,
+        )
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    rows = db.execute(
+        select(ApprovalEvent, User)
+        .join(User, User.id == ApprovalEvent.actor_id)
+        .where(
+            ApprovalEvent.workspace_owner_id == user.id,
+            ApprovalEvent.module_id == module_id,
+            ApprovalEvent.record_id == record_id,
+        )
+        .order_by(ApprovalEvent.id)
+    ).all()
+    return [
+        ApprovalEventOut(
+            id=event.id,
+            action=event.action,
+            comment=event.comment,
+            created_at=event.created_at,
+            actor_email=actor.email,
+            actor_name=actor.display_name,
+        )
+        for event, actor in rows
+    ]
+
+
+@app.post("/api/modules/{module_id}/records/{record_id}/submit", response_model=ModuleRecordOut)
+def submit_for_approval(
+    module_id: str,
+    record_id: int,
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if module_id not in APPROVAL_MODULES:
+        raise HTTPException(status_code=404, detail="This module does not use approvals.")
+    require_workspace_role(user, "admin", "requester", "approver")
+    record = db.scalar(
+        select(ModuleRecord)
+        .where(
+            ModuleRecord.id == record_id,
+            ModuleRecord.owner_id == user.id,
+            ModuleRecord.module_id == module_id,
+        )
+        .with_for_update()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    if record.status not in {"Draft", "Rejected"}:
+        raise HTTPException(status_code=409, detail="Only drafts and rejected documents can be submitted.")
+    record.status = "Pending Approval"
+    db.add(
+        ApprovalEvent(
+            workspace_owner_id=user.id,
+            module_id=module_id,
+            record_id=record.id,
+            actor_id=user.actor_id,
+            action="submitted",
+        )
+    )
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.post(
+    "/api/modules/{module_id}/records/{record_id}/review",
+    response_model=ModuleRecordOut,
+)
+def review_document(
+    module_id: str,
+    record_id: int,
+    payload: ApprovalActionIn,
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if module_id not in APPROVAL_MODULES:
+        raise HTTPException(status_code=404, detail="This module does not use approvals.")
+    require_workspace_role(user, "admin", "approver")
+    if payload.action == "reject" and not payload.comment:
+        raise HTTPException(status_code=422, detail="Add a reason when rejecting a document.")
+    record = db.scalar(
+        select(ModuleRecord)
+        .where(
+            ModuleRecord.id == record_id,
+            ModuleRecord.owner_id == user.id,
+            ModuleRecord.module_id == module_id,
+        )
+        .with_for_update()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    if record.status != "Pending Approval":
+        raise HTTPException(status_code=409, detail="Only documents awaiting approval can be reviewed.")
+    record.status = "Approved" if payload.action == "approve" else "Rejected"
+    db.add(
+        ApprovalEvent(
+            workspace_owner_id=user.id,
+            module_id=module_id,
+            record_id=record.id,
+            actor_id=user.actor_id,
+            action=payload.action,
+            comment=payload.comment,
+        )
+    )
+    db.commit()
+    db.refresh(record)
+    return record
+
+
 @app.post("/api/fiscal-periods/{period_id}/close", response_model=FiscalPeriodDetailOut)
 def close_fiscal_period(
     period_id: int,
-    _user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    period = db.get(FiscalPeriod, period_id)
-    if period is None:
+    require_workspace_role(user, "admin")
+    row = db.execute(
+        select(FiscalPeriod, FiscalYear)
+        .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
+        .where(FiscalPeriod.id == period_id, FiscalYear.owner_id == user.id)
+        .with_for_update()
+    ).first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Fiscal period not found.")
+    period, _year = row
     period.status = "CLOSED"
     db.commit()
     row = db.execute(
         select(FiscalPeriod, FiscalYear)
         .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
-        .where(FiscalPeriod.id == period_id)
+        .where(FiscalPeriod.id == period_id, FiscalYear.owner_id == user.id)
     ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Fiscal year not found.")
@@ -1425,18 +2002,25 @@ def close_fiscal_period(
 @app.post("/api/fiscal-periods/{period_id}/reopen", response_model=FiscalPeriodDetailOut)
 def reopen_fiscal_period(
     period_id: int,
-    _user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    period = db.get(FiscalPeriod, period_id)
-    if period is None:
+    require_workspace_role(user, "admin")
+    row = db.execute(
+        select(FiscalPeriod, FiscalYear)
+        .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
+        .where(FiscalPeriod.id == period_id, FiscalYear.owner_id == user.id)
+        .with_for_update()
+    ).first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Fiscal period not found.")
+    period, _year = row
     period.status = "OPEN"
     db.commit()
     row = db.execute(
         select(FiscalPeriod, FiscalYear)
         .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
-        .where(FiscalPeriod.id == period_id)
+        .where(FiscalPeriod.id == period_id, FiscalYear.owner_id == user.id)
     ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Fiscal year not found.")
@@ -1450,7 +2034,7 @@ def reopen_fiscal_period(
 def post_accounting_record(
     module_id: str,
     record_id: int,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if module_id not in {"journal-entry", "ap", "ar"}:
@@ -1466,12 +2050,17 @@ def post_accounting_record(
         raise HTTPException(status_code=404, detail="Record not found.")
     if record.status == "Posted":
         raise HTTPException(status_code=409, detail="This record has already been posted.")
+    require_workspace_role(user, "admin", "requester", "approver")
+    if record.status != "Approved":
+        raise HTTPException(status_code=409, detail="Approve this document before posting it.")
+    if not has_approval_event(db, user.id, module_id, record.id):
+        raise HTTPException(status_code=409, detail="This document has no recorded approval; submit it for review.")
     posting_date, document_no, lines = make_posting_lines(
         module_id,
         record,
         get_accounts_by_code(db, user.id),
     )
-    require_open_period(db, posting_date)
+    require_open_period(db, user.id, posting_date)
     write_ledger_entries(db, user.id, record, posting_date, document_no, lines)
     if module_id in {"ap", "ar"}:
         taxable_minor = amount_to_minor(record.data.get("amount"))
@@ -1494,7 +2083,7 @@ def post_accounting_record(
 @app.get("/api/modules/{module_id}/settlements", response_model=list[InvoiceSettlementOut])
 def list_invoice_settlements(
     module_id: str,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if module_id not in {"ap", "ar"}:
@@ -1520,9 +2109,10 @@ def record_invoice_payment(
     module_id: str,
     record_id: int,
     payload: InvoicePaymentCreate,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    require_workspace_role(user, "admin", "requester", "approver")
     if module_id not in {"ap", "ar"}:
         raise HTTPException(status_code=404, detail="Payments and receipts are available for AP and AR invoices.")
     invoice = db.scalar(
@@ -1587,7 +2177,7 @@ def record_invoice_payment(
     )
     if cash_account.id == control_account.id:
         raise HTTPException(status_code=422, detail="Select a cash or bank account different from the invoice control account.")
-    require_open_period(db, payload.posting_date)
+    require_open_period(db, user.id, payload.posting_date)
 
     payment = InvoiceSettlement(
         owner_id=user.id,
@@ -1642,9 +2232,10 @@ def record_invoice_payment(
 @app.post("/api/modules/fixed-assets/records/{record_id}/post-acquisition", response_model=ModuleRecordOut)
 def post_fixed_asset_acquisition(
     record_id: int,
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    require_workspace_role(user, "admin", "requester", "approver")
     record = db.scalar(
         select(ModuleRecord).where(
             ModuleRecord.id == record_id,
@@ -1654,6 +2245,10 @@ def post_fixed_asset_acquisition(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Fixed asset not found.")
+    if record.status != "Approved":
+        raise HTTPException(status_code=409, detail="Approve this asset before posting its acquisition.")
+    if not has_approval_event(db, user.id, "fixed-assets", record.id):
+        raise HTTPException(status_code=409, detail="This asset has no recorded approval; submit it for review.")
     existing_entries = db.scalars(
         select(LedgerEntry).where(
             LedgerEntry.owner_id == user.id,
@@ -1676,7 +2271,7 @@ def post_fixed_asset_acquisition(
     )
     if asset_account.id == offset_account.id:
         raise HTTPException(status_code=422, detail="Choose a different acquisition offset account.")
-    require_open_period(db, posting_date)
+    require_open_period(db, user.id, posting_date)
     write_ledger_entries(
         db,
         user.id,
@@ -1714,7 +2309,7 @@ def post_fixed_asset_acquisition(
 def depreciate_fixed_asset(
     record_id: int,
     period_end: date = Query(...),
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     record = db.scalar(
@@ -1784,7 +2379,8 @@ def depreciate_fixed_asset(
         record.data.get("depreciation_expense_account_code"),
         {"Expense"},
     )
-    require_open_period(db, period_end)
+    require_workspace_role(user, "admin", "requester", "approver")
+    require_open_period(db, user.id, period_end)
     document_no = f"DEP-{record.data.get('asset_code') or record.id}-{period_end:%Y%m}"
     first_line = 3 + len(depreciation_entries)
     write_ledger_entries(
@@ -1823,7 +2419,7 @@ def depreciate_fixed_asset(
 def trial_balance(
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     today = date.today()
@@ -1841,7 +2437,7 @@ def general_ledger(
     account_code: str | None = Query(default=None, max_length=40),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     statement = select(LedgerEntry).where(LedgerEntry.owner_id == user.id)
@@ -1858,7 +2454,7 @@ def general_ledger(
 
 @app.get("/api/accounting/budget-variance", response_model=list[BudgetVarianceOut])
 def budget_variance(
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     budgets = db.scalars(
@@ -1870,9 +2466,20 @@ def budget_variance(
         )
         .order_by(ModuleRecord.name)
     ).all()
+    approved_ids = set(
+        db.scalars(
+            select(ApprovalEvent.record_id).where(
+                ApprovalEvent.workspace_owner_id == user.id,
+                ApprovalEvent.module_id == "budgeting",
+                ApprovalEvent.action == "approve",
+            )
+        ).all()
+    )
     accounts = get_accounts_by_code(db, user.id)
     output: list[BudgetVarianceOut] = []
     for budget in budgets:
+        if budget.id not in approved_ids:
+            continue
         account_code = budget.data.get("account_code")
         if not isinstance(account_code, str) or not account_code.strip():
             continue
@@ -1917,7 +2524,7 @@ def financial_report(
     report_type: Literal["income_statement", "balance_sheet"] = Query(...),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     today = date.today()
@@ -2027,7 +2634,7 @@ def financial_report(
 
 @app.get("/api/accounting/gst-summary")
 def gst_summary(
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     invoices = db.scalars(
@@ -2065,7 +2672,7 @@ def gst_summary(
 @app.get("/api/accounting/dashboard-summary")
 def dashboard_summary(
     period: Literal["This Year", "This Quarter", "This Month"] = Query(default="This Year"),
-    user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     today = date.today()
@@ -2093,12 +2700,19 @@ def dashboard_summary(
         )
     ) or 0
     active_year_count = db.scalar(
-        select(func.count(FiscalYear.id)).where(FiscalYear.status == "ACTIVE")
+        select(func.count(FiscalYear.id)).where(
+            FiscalYear.owner_id == user.id,
+            FiscalYear.status == "ACTIVE",
+        )
     ) or 0
     open_period_count = db.scalar(
         select(func.count(FiscalPeriod.id))
         .join(FiscalYear, FiscalYear.id == FiscalPeriod.fiscal_year_id)
-        .where(FiscalPeriod.status == "OPEN", FiscalYear.status == "ACTIVE")
+        .where(
+            FiscalYear.owner_id == user.id,
+            FiscalPeriod.status == "OPEN",
+            FiscalYear.status == "ACTIVE",
+        )
     ) or 0
     period_entries = db.scalars(
         select(LedgerEntry).where(
@@ -2195,10 +2809,10 @@ def api_info():
 @app.get("/api/fiscal-years", response_model=list[FiscalYearOut])
 def list_fiscal_years(
     company: str | None = Query(default=None, max_length=30),
-    _user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    statement = select(FiscalYear).order_by(FiscalYear.start_date.desc(), FiscalYear.code)
+    statement = select(FiscalYear).where(FiscalYear.owner_id == user.id).order_by(FiscalYear.start_date.desc(), FiscalYear.code)
     if company:
         statement = statement.where(FiscalYear.company_code == company.strip().upper())
     years = db.scalars(statement).all()
@@ -2208,11 +2822,13 @@ def list_fiscal_years(
 @app.post("/api/fiscal-years", response_model=FiscalYearOut, status_code=201)
 def create_fiscal_year(
     payload: FiscalYearCreate,
-    _user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    require_workspace_role(user, "admin")
     duplicate_code = db.scalar(
         select(FiscalYear.id).where(
+            FiscalYear.owner_id == user.id,
             FiscalYear.company_code == payload.company,
             FiscalYear.code == payload.code,
         ).limit(1)
@@ -2222,6 +2838,7 @@ def create_fiscal_year(
 
     overlapping = db.scalar(
         select(FiscalYear.id).where(
+            FiscalYear.owner_id == user.id,
             FiscalYear.company_code == payload.company,
             FiscalYear.start_date <= payload.end,
             FiscalYear.end_date >= payload.start,
@@ -2231,6 +2848,7 @@ def create_fiscal_year(
         raise HTTPException(status_code=409, detail="This date range overlaps an existing fiscal year for the company.")
 
     year = FiscalYear(
+        owner_id=user.id,
         company_code=payload.company,
         code=payload.code,
         name=payload.name,
@@ -2255,13 +2873,13 @@ def create_fiscal_year(
 @app.get("/api/fiscal-years/{fiscal_year_id}", response_model=FiscalYearOut)
 def get_fiscal_year(
     fiscal_year_id: int,
-    _user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     year = db.scalar(
         select(FiscalYear)
         .options(selectinload(FiscalYear.periods))
-        .where(FiscalYear.id == fiscal_year_id)
+        .where(FiscalYear.id == fiscal_year_id, FiscalYear.owner_id == user.id)
     )
     if year is None:
         raise HTTPException(status_code=404, detail="Fiscal year not found.")
@@ -2271,13 +2889,14 @@ def get_fiscal_year(
 @app.post("/api/fiscal-years/{fiscal_year_id}/activate", response_model=FiscalYearOut)
 def activate_fiscal_year(
     fiscal_year_id: int,
-    _user: User = Depends(get_current_user),
+    user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    require_workspace_role(user, "admin")
     year = db.scalar(
         select(FiscalYear)
         .options(selectinload(FiscalYear.periods))
-        .where(FiscalYear.id == fiscal_year_id)
+        .where(FiscalYear.id == fiscal_year_id, FiscalYear.owner_id == user.id)
         .with_for_update()
     )
     if year is None:
@@ -2287,6 +2906,7 @@ def activate_fiscal_year(
 
     existing_active = db.scalar(
         select(FiscalYear.id).where(
+            FiscalYear.owner_id == user.id,
             FiscalYear.company_code == year.company_code,
             FiscalYear.status == "ACTIVE",
             FiscalYear.id != year.id,

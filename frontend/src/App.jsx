@@ -22,6 +22,9 @@ function App() {
   const [authState, setAuthState] = useState('loading')
   const [authError, setAuthError] = useState('')
   const [logoutError, setLogoutError] = useState('')
+  const [workspaces, setWorkspaces] = useState([])
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState('')
+  const [workspaceReady, setWorkspaceReady] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -45,6 +48,33 @@ function App() {
     return () => { cancelled = true }
   }, [])
 
+  useEffect(() => {
+    if (authState !== 'authenticated') return undefined
+    let cancelled = false
+    fetch(`${API_BASE}/api/workspaces`, { credentials: 'include' })
+      .then(async (response) => {
+        const data = await response.json()
+        if (!response.ok) throw new Error(data?.detail || `Workspace request failed (${response.status}).`)
+        return data
+      })
+      .then((items) => {
+        if (cancelled) return
+        if (!items.length) throw new Error('No FICO workspace is assigned to this account.')
+        const storedId = window.localStorage.getItem('stackly-workspace-id')
+        const selected = items.find((item) => String(item.id) === storedId) || items[0]
+        window.localStorage.setItem('stackly-workspace-id', String(selected.id))
+        setWorkspaces(items)
+        setActiveWorkspaceId(String(selected.id))
+        setWorkspaceReady(true)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setAuthError(error.message || 'Unable to load your workspaces.')
+        setAuthState('error')
+      })
+    return () => { cancelled = true }
+  }, [authState])
+
   async function logout() {
     setLogoutError('')
     try {
@@ -53,6 +83,10 @@ function App() {
       setUser(null)
       setPage('home')
       setSearch('')
+      window.localStorage.removeItem('stackly-workspace-id')
+      setWorkspaces([])
+      setActiveWorkspaceId('')
+      setWorkspaceReady(false)
       setAuthState('unauthenticated')
     } catch (error) {
       setLogoutError(error.message || 'Unable to sign out.')
@@ -68,28 +102,32 @@ function App() {
   if (authState === 'unauthenticated') {
     return <Login onAuthenticated={(currentUser) => { setUser(currentUser); setAuthState('authenticated') }} />
   }
+  if (!workspaceReady) {
+    return <main className="auth-loading">Loading your FICO workspace…</main>
+  }
 
   const navigate = (id) => {
     setPage(id)
     setSearch('')
     window.scrollTo({ top: 0 })
   }
+  const activeWorkspace = workspaces.find((workspace) => String(workspace.id) === activeWorkspaceId)
 
   let content
   if (page === 'home') {
     content = <FicoDashboard onNavigate={navigate} search={search} />
   } else if (page === 'fiscal-year') {
-    content = <FiscalYearModule embedded />
+    content = <FiscalYearModule embedded role={activeWorkspace?.role} />
   } else if (page === 'trial-balance') {
     content = <LedgerReport mode="trial-balance" search={search} />
   } else if (page === 'general-ledger') {
     content = <LedgerReport mode="general-ledger" search={search} />
   } else if (page === 'fiscal-period') {
-    content = <FiscalPeriodManager onNavigate={navigate} />
+    content = <FiscalPeriodManager onNavigate={navigate} role={activeWorkspace?.role} />
   } else if (page === 'financial-reports') {
     content = <ModuleInsights moduleId="financial-reports" />
   } else if (ficoNav.some((item) => item.id === page)) {
-    content = <ModuleWorkbench key={page} moduleId={page} search={search} onNavigate={navigate} />
+    content = <ModuleWorkbench key={page} moduleId={page} search={search} onNavigate={navigate} role={activeWorkspace?.role} />
   } else {
     const title = ficoNav.find((n) => n.id === page)?.label ?? 'Module'
     content = <ComingSoon title={title} onBack={() => navigate('home')} />
@@ -99,8 +137,22 @@ function App() {
     <div className="app-shell">
       <Sidebar page={page} onNavigate={navigate} open={menuOpen} onClose={() => setMenuOpen(false)} />
       <div className="app-main">
-        <Topbar search={search} onSearch={setSearch} onMenu={() => setMenuOpen(true)} user={user} onLogout={logout} logoutError={logoutError} />
-        <main className="app-content">{content}</main>
+        <Topbar
+          search={search}
+          onSearch={setSearch}
+          onMenu={() => setMenuOpen(true)}
+          user={user}
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceChange={(workspaceId) => {
+            window.localStorage.setItem('stackly-workspace-id', String(workspaceId))
+            setActiveWorkspaceId(String(workspaceId))
+          }}
+          onWorkspacesChange={(items) => setWorkspaces(items)}
+          onLogout={logout}
+          logoutError={logoutError}
+        />
+        <main className="app-content" key={activeWorkspaceId}>{content}</main>
       </div>
     </div>
   )

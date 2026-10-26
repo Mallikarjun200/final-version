@@ -1,17 +1,17 @@
 import { useEffect, useState } from 'react'
+import { apiFetch } from '../api.js'
 import './LedgerReport.css'
 import './FiscalPeriodManager.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
-
 async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options })
+  const response = await apiFetch(path, options)
   const data = response.status === 204 ? null : await response.json()
   if (!response.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : `Request failed (${response.status}).`)
   return data
 }
 
-export default function FiscalPeriodManager({ onNavigate }) {
+export default function FiscalPeriodManager({ onNavigate, role = 'requester' }) {
+  const canManage = role === 'admin'
   const [periods, setPeriods] = useState([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -95,7 +95,9 @@ export default function FiscalPeriodManager({ onNavigate }) {
         <div><p>FICO WORKSPACE</p><h1>Fiscal Periods</h1><span>Automatic fiscal-year periods can be adjusted while preserving a continuous calendar. Closed periods reject new postings.</span></div>
         <div className="period-heading-actions">
           <button className="ledger-export" onClick={loadPeriods} disabled={loading || busy}>Refresh</button>
-          <button className="period-action" onClick={() => onNavigate?.('fiscal-year')}>Create fiscal year</button>
+          {canManage
+            ? <button className="period-action" onClick={() => onNavigate?.('fiscal-year')}>Create fiscal year</button>
+            : <span className="period-admin-note">Period changes are restricted to workspace admins.</span>}
         </div>
       </header>
       {error && <div className="ledger-error" role="alert">{error}</div>}
@@ -109,16 +111,18 @@ export default function FiscalPeriodManager({ onNavigate }) {
               <td>{period.start_date}</td><td>{period.end_date}</td><td>{period.fiscal_year_status}</td>
               <td><span className={`period-status ${period.status.toLowerCase()}`}>{period.status}</span></td>
               <td className="period-row-actions">
-                <button className="period-action" disabled={busy} onClick={() => startEdit(period)}>Edit</button>
-                <button className="period-action" disabled={busy} onClick={() => setPeriodStatus(period)}>{period.status === 'OPEN' ? 'Close period' : 'Reopen period'}</button>
+                {canManage && <>
+                  <button className="period-action" disabled={busy} onClick={() => startEdit(period)}>Edit</button>
+                  <button className="period-action" disabled={busy} onClick={() => setPeriodStatus(period)}>{period.status === 'OPEN' ? 'Close period' : 'Reopen period'}</button>
+                </>}
               </td>
             </tr>
           ))}
-          {!periods.length && <tr><td colSpan="7" className="ledger-empty">Create a fiscal year to generate its twelve periods.<br /><button className="period-action" onClick={() => onNavigate?.('fiscal-year')}>Open Fiscal Year</button></td></tr>}</tbody>
+          {!periods.length && <tr><td colSpan="7" className="ledger-empty">{canManage ? <>Create a fiscal year to generate its twelve periods.<br /><button className="period-action" onClick={() => onNavigate?.('fiscal-year')}>Open Fiscal Year</button></> : 'No fiscal periods are configured for this workspace.'}</td></tr>}</tbody>
         </table></div>
       )}
       <p className="ledger-note">Fiscal years generate twelve periods automatically. Changing a period boundary shifts the adjoining open period to avoid gaps or overlaps; dates that contain posted ledger entries cannot be reassigned.</p>
-      {editing && (
+      {editing && canManage && (
         <div className="period-modal-backdrop" role="presentation">
           <section className="period-modal" role="dialog" aria-modal="true" aria-labelledby="period-edit-title">
             <header><div><p>FISCAL PERIOD</p><h2 id="period-edit-title">Edit {editing.fiscal_year_code} · {String(editing.period_number).padStart(2, '0')}</h2></div><button aria-label="Close" onClick={() => setEditing(null)} disabled={busy}>×</button></header>

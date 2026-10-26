@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '../api.js'
 import { ficoNav } from '../data/ficoData.js'
 import ModuleInsights from './ModuleInsights.jsx'
 import './ModuleWorkbench.css'
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 const moduleFields = {
   company: [
@@ -113,8 +112,7 @@ const moduleTableFieldKeys = {
 }
 
 async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: 'include',
+  const response = await apiFetch(path, {
     headers: { 'Content-Type': 'application/json', ...options.headers },
     ...options,
   })
@@ -147,7 +145,7 @@ function localDateValue() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
-export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
+export default function ModuleWorkbench({ moduleId, search = '', onNavigate, role = 'admin' }) {
   const module = ficoNav.find((item) => item.id === moduleId)
   const fields = moduleFields[moduleId] || []
   const tableFields = (moduleTableFieldKeys[moduleId] || fields.slice(0, 3).map((field) => field.key))
@@ -165,9 +163,15 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
   const [gstRates, setGstRates] = useState([])
   const [settlements, setSettlements] = useState({})
   const [paymentRecord, setPaymentRecord] = useState(null)
+  const [approvalHistories, setApprovalHistories] = useState({})
+  const [openHistoryId, setOpenHistoryId] = useState(null)
   const [paymentForm, setPaymentForm] = useState({ payment_reference: '', posting_date: localDateValue(), amount: '', cash_account_code: '' })
   const [refreshCount, setRefreshCount] = useState(0)
   const postingModule = ['journal-entry', 'ap', 'ar'].includes(moduleId)
+  const approvalModule = ['journal-entry', 'ap', 'ar', 'fixed-assets', 'budgeting'].includes(moduleId)
+  const canRequest = ['admin', 'requester', 'approver'].includes(role)
+  const canReview = ['admin', 'approver'].includes(role)
+  const canManage = role === 'admin'
   const invoiceModule = ['ap', 'ar'].includes(moduleId)
   const needsAccounts = postingModule || ['fixed-assets', 'budgeting'].includes(moduleId)
   const activeAccountTypes = new Set(accounts.filter((account) => account.status === 'Active').map((account) => account.account_type))
@@ -249,16 +253,18 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
     }
     try {
       const path = `/api/modules/${moduleId}/records${editingId ? `/${editingId}` : ''}`
+      const payload = { name: form.name, data }
+      if (!approvalModule) payload.status = form.status
       const record = await apiRequest(path, {
         method: editingId ? 'PATCH' : 'POST',
-        body: JSON.stringify({ ...form, data }),
+        body: JSON.stringify(payload),
       })
       setRecords((current) => editingId
         ? current.map((item) => item.id === record.id ? record : item)
         : [record, ...current])
       setShowForm(false)
-      setNotice(postingModule
-        ? `${record.name} saved as a draft. Post it to include it in the ledger.`
+      setNotice(approvalModule
+        ? `${record.name} saved as a draft. Submit it for approval before posting.`
         : `${record.name} saved.`)
       setRefreshCount((count) => count + 1)
     } catch (requestError) {
@@ -351,6 +357,61 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
     }
   }
 
+  async function submitApproval(record) {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const submitted = await apiRequest(`/api/modules/${moduleId}/records/${record.id}/submit`, { method: 'POST' })
+      setRecords((current) => current.map((item) => item.id === submitted.id ? submitted : item))
+      setNotice(`${submitted.name} submitted for approval.`)
+      setRefreshCount((count) => count + 1)
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function reviewApproval(record, action) {
+    const comment = action === 'reject'
+      ? window.prompt('Enter a reason for rejecting this document:')
+      : ''
+    if (action === 'reject' && !comment?.trim()) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const reviewed = await apiRequest(`/api/modules/${moduleId}/records/${record.id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ action, comment: comment?.trim() || null }),
+      })
+      setRecords((current) => current.map((item) => item.id === reviewed.id ? reviewed : item))
+      setNotice(`${reviewed.name} ${action === 'approve' ? 'approved' : 'rejected'}.`)
+      setApprovalHistories((current) => ({ ...current, [record.id]: null }))
+      setRefreshCount((count) => count + 1)
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function toggleApprovalHistory(record) {
+    if (openHistoryId === record.id) {
+      setOpenHistoryId(null)
+      return
+    }
+    setOpenHistoryId(record.id)
+    if (approvalHistories[record.id]) return
+    try {
+      const history = await apiRequest(`/api/modules/${moduleId}/records/${record.id}/approvals`)
+      setApprovalHistories((current) => ({ ...current, [record.id]: history }))
+    } catch (requestError) {
+      setError(requestError.message)
+    }
+  }
+
   function startPayment(record) {
     setPaymentRecord(record)
     setPaymentForm({
@@ -413,8 +474,8 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
   return (
     <section className="wb-page">
       <header className="wb-heading">
-        <div><p>FICO WORKSPACE</p><h1>{module.label}</h1><span>{postingModule ? 'Drafts do not affect balances; posted entries are immutable and feed the live ledger.' : `Manage ${module.label.toLowerCase()} records in your workspace.`}</span></div>
-        <button className="wb-primary" onClick={startCreate}>＋ New record</button>
+        <div><p>FICO WORKSPACE</p><h1>{module.label}</h1><span>{approvalModule ? 'Save a draft, submit it for approval, then post approved accounting documents to the ledger.' : `Manage ${module.label.toLowerCase()} records in your workspace.`}</span></div>
+        {(approvalModule ? canRequest : canManage) && <button className="wb-primary" onClick={startCreate}>＋ New record</button>}
       </header>
       {needsAccounts && missingAccountTypes.length > 0 && (
         <div className="wb-prerequisite" role="status">
@@ -453,7 +514,8 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
               <thead><tr><th>Name</th>{tableFields.map((field) => <th key={field.key}>{field.label}</th>)}{invoiceModule && <><th>Paid</th><th>Outstanding</th><th>Settlement</th></>}<th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
               <tbody>
                 {filteredRecords.map((record) => (
-                  <tr key={record.id}>
+                  <Fragment key={record.id}>
+                  <tr>
                     <td><b>{record.name}</b></td>
                     {tableFields.map((field) => {
                       const value = record.data[field.key]
@@ -485,19 +547,43 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
                         </td>
                       </>
                     })()}
-                    <td><span className="wb-status">{record.status}</span></td>
+                    <td><span className={`wb-status ${record.status.toLowerCase().replaceAll(' ', '-')}`}>{record.status}</span></td>
                     <td>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(record.updated_at))}</td>
                     <td><div className="wb-actions">
-                      {record.status !== 'Posted' && !(moduleId === 'fixed-assets' && record.status === 'Active') && <button onClick={() => startEdit(record)} disabled={busy}>Edit</button>}
-                      {postingModule && record.status !== 'Posted' && <button onClick={() => postRecord(record)} disabled={busy}>Post</button>}
-                      {invoiceModule && record.status === 'Posted' && (settlements[record.id]?.outstanding_minor ?? Number(record.data.amount || 0) * 100 + Number(record.data.tax_amount_minor || 0)) > 0 && (
+                      {(approvalModule ? canRequest : canManage) && record.status === 'Rejected' && <button onClick={() => startEdit(record)} disabled={busy}>Edit</button>}
+                      {(approvalModule ? canRequest : canManage) && record.status === 'Draft' && <button onClick={() => startEdit(record)} disabled={busy}>Edit</button>}
+                      {approvalModule && canRequest && ['Draft', 'Rejected'].includes(record.status) && <button onClick={() => submitApproval(record)} disabled={busy}>Submit</button>}
+                      {approvalModule && canReview && record.status === 'Pending Approval' && <>
+                        <button onClick={() => reviewApproval(record, 'approve')} disabled={busy}>Approve</button>
+                        <button className="danger" onClick={() => reviewApproval(record, 'reject')} disabled={busy}>Reject</button>
+                      </>}
+                      {approvalModule && <button onClick={() => toggleApprovalHistory(record)} disabled={busy}>History</button>}
+                      {postingModule && canRequest && record.status === 'Approved' && <button onClick={() => postRecord(record)} disabled={busy}>Post</button>}
+                      {invoiceModule && canRequest && record.status === 'Posted' && (settlements[record.id]?.outstanding_minor ?? Number(record.data.amount || 0) * 100 + Number(record.data.tax_amount_minor || 0)) > 0 && (
                         <button onClick={() => startPayment(record)} disabled={busy}>{moduleId === 'ap' ? 'Record payment' : 'Record receipt'}</button>
                       )}
-                      {moduleId === 'fixed-assets' && record.status !== 'Active' && <button onClick={() => postAssetAcquisition(record)} disabled={busy}>Post asset</button>}
-                      {moduleId === 'fixed-assets' && record.status === 'Active' && <button onClick={() => depreciateAsset(record)} disabled={busy}>Post depreciation</button>}
-                      {record.status !== 'Posted' && !(moduleId === 'fixed-assets' && record.status === 'Active') && <button className="danger" onClick={() => remove(record)} disabled={busy}>Delete</button>}
+                      {moduleId === 'fixed-assets' && canRequest && record.status === 'Approved' && <button onClick={() => postAssetAcquisition(record)} disabled={busy}>Post asset</button>}
+                      {moduleId === 'fixed-assets' && canRequest && record.status === 'Active' && <button onClick={() => depreciateAsset(record)} disabled={busy}>Post depreciation</button>}
+                      {canRequest && approvalModule && ['Draft', 'Rejected'].includes(record.status) && <button className="danger" onClick={() => remove(record)} disabled={busy}>Delete</button>}
+                      {!approvalModule && canManage && record.status !== 'Posted' && !(moduleId === 'fixed-assets' && record.status === 'Active') && <button className="danger" onClick={() => remove(record)} disabled={busy}>Delete</button>}
                     </div></td>
                   </tr>
+                  {approvalModule && openHistoryId === record.id && (
+                    <tr>
+                      <td colSpan={tableFields.length + (invoiceModule ? 7 : 4)}>
+                        <div className="wb-approval-history">
+                          <b>Approval history</b>
+                          {approvalHistories[record.id] === undefined ? <span>Loading history…</span>
+                            : approvalHistories[record.id]?.length
+                              ? approvalHistories[record.id].map((event) => (
+                                <span key={event.id}>{event.created_at.slice(0, 16).replace('T', ' ')} · {event.actor_name} ({event.actor_email}) · {event.action}{event.comment ? ` · ${event.comment}` : ''}</span>
+                              ))
+                              : <span>No approval events yet.</span>}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
                 {!filteredRecords.length && <tr><td colSpan={tableFields.length + (invoiceModule ? 7 : 4)} className="wb-empty">{records.length ? 'No records match your search.' : `No ${module.label.toLowerCase()} records yet. Use “New record” to add one; posted transactions update the live ledger.`}</td></tr>}
               </tbody>
@@ -513,8 +599,10 @@ export default function ModuleWorkbench({ moduleId, search = '', onNavigate }) {
             <form onSubmit={save}>
               <label className="wb-field"><span>Record name *</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required maxLength={160} /></label>
               {postingModule
-                ? <label className="wb-field"><span>Status</span><input value="Draft — post after saving" disabled /></label>
-                : <label className="wb-field"><span>Status *</span><select value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))}>{(moduleId === 'chart-of-accounts' ? ['Draft', 'Active', 'Inactive'] : moduleId === 'fixed-assets' ? [...(form.status === 'Active' ? ['Active'] : []), 'Draft', 'In Progress', 'Approved', 'Inactive'] : ['Draft', 'In Progress', 'Approved', 'Posted', 'Closed', 'Active', 'Inactive']).map((option) => <option key={option}>{option}</option>)}</select></label>}
+                ? <label className="wb-field"><span>Status</span><input value="Draft — submit after saving" disabled /></label>
+                : approvalModule
+                  ? <label className="wb-field"><span>Approval status</span><input value={editingId ? form.status : 'Draft — submit after saving'} disabled /></label>
+                  : <label className="wb-field"><span>Status *</span><select value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))}>{(moduleId === 'chart-of-accounts' ? ['Draft', 'Active', 'Inactive'] : moduleId === 'fixed-assets' ? [...(form.status === 'Active' ? ['Active'] : []), 'Draft', 'In Progress', 'Approved', 'Inactive'] : ['Draft', 'In Progress', 'Approved', 'Posted', 'Closed', 'Active', 'Inactive']).map((option) => <option key={option}>{option}</option>)}</select></label>}
               <div className="wb-form-grid">
                 {fields.filter((field) => (
                   !['cgst_rate', 'sgst_rate', 'tax_account_code', 'cgst_account_code', 'sgst_account_code'].includes(field.key)

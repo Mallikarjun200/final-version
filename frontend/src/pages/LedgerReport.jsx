@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '../api.js'
 import './LedgerReport.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 const categories = {
   Asset: 'Assets',
   Liability: 'Liabilities',
@@ -17,7 +17,7 @@ function defaultDateRange() {
 }
 
 async function apiRequest(path) {
-  const response = await fetch(`${API_BASE}${path}`, { credentials: 'include' })
+  const response = await apiFetch(path)
   const data = response.status === 204 ? null : await response.json()
   if (!response.ok) {
     throw new Error(typeof data?.detail === 'string' ? data.detail : `Request failed (${response.status}).`)

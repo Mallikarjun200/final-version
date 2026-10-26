@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import { apiFetch } from './api.js'
 import './FiscalYearModule.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 function getDefaultDates(variant) {
   const today = new Date()
   const year = today.getFullYear()
@@ -30,8 +30,7 @@ function errorMessage(data, fallback) {
 }
 
 async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: 'include',
+  const response = await apiFetch(path, {
     headers: { 'Content-Type': 'application/json', ...options.headers },
     ...options,
   })
@@ -72,7 +71,8 @@ function Field({ label, name, value, onChange, error, hint, ...props }) {
   )
 }
 
-function FiscalYearModule({ embedded = false }) {
+function FiscalYearModule({ embedded = false, role = 'requester' }) {
+  const canManage = role === 'admin'
   const [years, setYears] = useState([])
   const [selected, setSelected] = useState(null)
   const [mode, setMode] = useState('list')
@@ -132,6 +132,7 @@ function FiscalYearModule({ embedded = false }) {
   const totalPeriods = years.reduce((total, year) => total + year.period_count, 0)
 
   function startCreate() {
+    if (!canManage) return
     setForm(INITIAL_FORM)
     setErrors({})
     setSelected(null)
@@ -204,7 +205,7 @@ function FiscalYearModule({ embedded = false }) {
   }
 
   async function activate() {
-    if (!selected) return
+    if (!canManage || !selected) return
     setBusy(true)
     try {
       const updated = await apiRequest(`/api/fiscal-years/${selected.id}/activate`, { method: 'POST' })
@@ -258,7 +259,8 @@ function FiscalYearModule({ embedded = false }) {
               <h1>{title}<span className="fy-title-dot">.</span></h1>
               <p>Define financial-year boundaries and manage accounting periods for your company.</p>
             </div>
-            {mode === 'list' && <button className="fy-primary" onClick={startCreate}><b>＋</b> New fiscal year</button>}
+            {!canManage && <p className="fy-readonly-note">Fiscal-year creation and activation are restricted to workspace admins.</p>}
+            {mode === 'list' && canManage && <button className="fy-primary" onClick={startCreate}><b>＋</b> New fiscal year</button>}
             {mode !== 'list' && <button className="fy-outline" onClick={() => { setMode('list'); setNotice('') }}>← Back to list</button>}
           </div>
 
@@ -324,7 +326,7 @@ function FiscalYearModule({ embedded = false }) {
               <div><small>Regular periods</small><b>{selected.period_count}</b></div>
               <div><small>Description</small><b>{selected.description || '—'}</b></div>
             </div>
-            {selected.status === 'DRAFT' && <div className="fy-detail-actions"><button className="fy-primary" disabled={busy} onClick={activate}>{busy ? 'Activating…' : 'Approve & activate'}</button></div>}
+            {selected.status === 'DRAFT' && canManage && <div className="fy-detail-actions"><button className="fy-primary" disabled={busy} onClick={activate}>{busy ? 'Activating…' : 'Approve & activate'}</button></div>}
             <h3 className="fy-period-heading">Generated accounting periods</h3>
             <div className="fy-table-wrap"><table className="fy-table"><thead><tr><th>Period</th><th>Period name</th><th>From</th><th>To</th><th>Status</th></tr></thead><tbody>
               {(selected.periods || []).map((period) => <tr key={period.id}><td>{String(period.period_number).padStart(2, '0')}</td><td>{period.name}</td><td>{formatDate(period.start_date)}</td><td>{formatDate(period.end_date)}</td><td><span className={`fy-status ${period.status === 'OPEN' ? 'active' : 'draft'}`}>{period.status}</span></td></tr>)}

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
+import { apiFetch } from '../api.js'
 import './ModuleInsights.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 const money = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' })
 
 async function apiRequest(path) {
-  const response = await fetch(`${API_BASE}${path}`, { credentials: 'include' })
+  const response = await apiFetch(path)
   const data = await response.json()
   if (!response.ok) {
     throw new Error(typeof data?.detail === 'string' ? data.detail : `Request failed (${response.status}).`)

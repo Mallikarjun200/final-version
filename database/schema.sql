@@ -3,8 +3,17 @@ CREATE DATABASE IF NOT EXISTS stackly_oneerp
   COLLATE utf8mb4_unicode_ci;
 USE stackly_oneerp;
 
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(254) NOT NULL UNIQUE,
+  display_name VARCHAR(100) NOT NULL,
+  password_hash VARCHAR(256) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS fiscal_years (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_id INT NOT NULL,
   company_code VARCHAR(30) NOT NULL,
   code VARCHAR(20) NOT NULL,
   name VARCHAR(100) NOT NULL,
@@ -18,13 +27,16 @@ CREATE TABLE IF NOT EXISTS fiscal_years (
     GENERATED ALWAYS AS (CASE WHEN status = 'ACTIVE' THEN company_code ELSE NULL END) STORED,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT uq_fiscal_year_company_code UNIQUE (company_code, code),
-  CONSTRAINT uq_fiscal_year_active_company UNIQUE (active_company_code),
+  CONSTRAINT uq_fiscal_year_company_code UNIQUE (owner_id, company_code, code),
+  CONSTRAINT uq_fiscal_year_active_company UNIQUE (owner_id, active_company_code),
+  CONSTRAINT fk_fiscal_year_owner FOREIGN KEY (owner_id)
+    REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT ck_fiscal_year_dates CHECK (start_date < end_date),
   CONSTRAINT ck_fiscal_year_variant CHECK (variant IN ('APR_MAR', 'JAN_DEC')),
   CONSTRAINT ck_fiscal_year_status CHECK (status IN ('DRAFT', 'ACTIVE')),
   CONSTRAINT ck_fiscal_year_period_count CHECK (period_count = 12),
-  INDEX ix_fiscal_year_company_dates (company_code, start_date, end_date)
+  INDEX ix_fiscal_year_company_dates (owner_id, company_code, start_date, end_date),
+  INDEX ix_fiscal_years_owner_id (owner_id)
 );
 
 CREATE TABLE IF NOT EXISTS fiscal_periods (
@@ -43,14 +55,6 @@ CREATE TABLE IF NOT EXISTS fiscal_periods (
   CONSTRAINT ck_fiscal_period_status CHECK (status IN ('OPEN', 'CLOSED'))
 );
 
-CREATE TABLE IF NOT EXISTS users (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  email VARCHAR(254) NOT NULL UNIQUE,
-  display_name VARCHAR(100) NOT NULL,
-  password_hash VARCHAR(256) NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS auth_sessions (
   id INT AUTO_INCREMENT PRIMARY KEY,
   token_hash CHAR(64) NOT NULL UNIQUE,
@@ -59,6 +63,22 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   CONSTRAINT fk_auth_session_user FOREIGN KEY (user_id)
     REFERENCES users(id) ON DELETE CASCADE,
   INDEX ix_auth_sessions_user (user_id)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_members (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_user_id INT NOT NULL,
+  member_user_id INT NOT NULL,
+  role VARCHAR(20) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_workspace_member_owner FOREIGN KEY (owner_user_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_workspace_member_user FOREIGN KEY (member_user_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT uq_workspace_member UNIQUE (owner_user_id, member_user_id),
+  CONSTRAINT ck_workspace_member_role CHECK (role IN ('admin', 'requester', 'approver')),
+  INDEX ix_workspace_member_owner (owner_user_id),
+  INDEX ix_workspace_member_user (member_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS module_records (
@@ -73,6 +93,24 @@ CREATE TABLE IF NOT EXISTS module_records (
   CONSTRAINT fk_module_record_owner FOREIGN KEY (owner_id)
     REFERENCES users(id) ON DELETE CASCADE,
   INDEX ix_module_records_owner_module (owner_id, module_id)
+);
+
+CREATE TABLE IF NOT EXISTS approval_events (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  workspace_owner_id INT NOT NULL,
+  module_id VARCHAR(40) NOT NULL,
+  record_id INT NOT NULL,
+  actor_id INT NOT NULL,
+  action VARCHAR(20) NOT NULL,
+  comment VARCHAR(500),
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_approval_workspace_owner FOREIGN KEY (workspace_owner_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_approval_record FOREIGN KEY (record_id)
+    REFERENCES module_records(id) ON DELETE CASCADE,
+  CONSTRAINT fk_approval_actor FOREIGN KEY (actor_id)
+    REFERENCES users(id) ON DELETE CASCADE,
+  INDEX ix_approval_record_history (workspace_owner_id, module_id, record_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS ledger_entries (

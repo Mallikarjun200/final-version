@@ -119,6 +119,7 @@ def test_fiscal_period_date_edits_validate_bounds_and_posted_ledger_dates(test_c
             },
         },
     ).json()
+    approve_document(test_client, "journal-entry", journal["id"])
     assert test_client.post(
         f"/api/modules/journal-entry/records/{journal['id']}/post"
     ).status_code == 200
@@ -204,6 +205,134 @@ def test_module_records_are_persistent_and_private_to_the_account(test_client):
         assert other_user.get("/api/modules/company/records").json() == []
 
 
+def test_workspace_roles_share_records_and_gate_approval_actions(test_client):
+    record = test_client.post(
+        "/api/modules/journal-entry/records",
+        json={"name": "Reviewable journal", "data": {"document_no": "JE-ROLE"}},
+    ).json()
+    workspace_id = test_client.get("/api/workspaces").json()[0]["id"]
+
+    with TestClient(main.app) as approver:
+        registration = approver.post(
+            "/api/auth/register",
+            json={
+                "email": "approver@example.com",
+                "display_name": "Approver User",
+                "password": "another-secure-password",
+            },
+        )
+        assert registration.status_code == 201
+        added = test_client.put(
+            "/api/workspaces/members",
+            json={"email": "approver@example.com", "role": "approver"},
+        )
+        assert added.status_code == 200
+        approver.headers.update({"X-Workspace-ID": str(workspace_id)})
+        assert approver.get("/api/modules/journal-entry/records").json()[0]["id"] == record["id"]
+
+        submitted = test_client.post(
+            f"/api/modules/journal-entry/records/{record['id']}/submit"
+        )
+        assert submitted.status_code == 200
+        assert submitted.json()["status"] == "Pending Approval"
+        assert approver.get("/api/approvals/pending").json()[0]["id"] == record["id"]
+        approved = approver.post(
+            f"/api/modules/journal-entry/records/{record['id']}/review",
+            json={"action": "approve"},
+        )
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "Approved"
+        history = approver.get(
+            f"/api/modules/journal-entry/records/{record['id']}/approvals"
+        ).json()
+        assert [event["action"] for event in history] == ["submitted", "approve"]
+        assert history[-1]["actor_email"] == "approver@example.com"
+
+        own_record = approver.post(
+            "/api/modules/journal-entry/records",
+            json={"name": "Approver self-review", "data": {"document_no": "JE-SELF"}},
+        ).json()
+        self_submission = approver.post(
+            f"/api/modules/journal-entry/records/{own_record['id']}/submit"
+        )
+        assert self_submission.status_code == 200
+        self_approval = approver.post(
+            f"/api/modules/journal-entry/records/{own_record['id']}/review",
+            json={"action": "approve"},
+        )
+        assert self_approval.status_code == 200
+        assert self_approval.json()["status"] == "Approved"
+
+        assert test_client.delete(
+            f"/api/workspaces/members/{added.json()['user_id']}"
+        ).status_code == 204
+        assert approver.get("/api/modules/journal-entry/records").status_code == 403
+
+
+def test_fiscal_years_and_periods_are_scoped_to_workspace(test_client):
+    created = test_client.post(
+        "/api/fiscal-years",
+        json=make_year("FY2027", "2026-04-01", "2027-03-31"),
+    )
+    assert created.status_code == 201
+
+    with TestClient(main.app) as other_workspace:
+        registration = other_workspace.post(
+            "/api/auth/register",
+            json={
+                "email": "finance-owner@example.com",
+                "display_name": "Finance Owner",
+                "password": "another-secure-password",
+            },
+        )
+        assert registration.status_code == 201
+        assert other_workspace.get("/api/fiscal-years").json() == []
+        assert other_workspace.get("/api/fiscal-periods").json() == []
+        duplicate_code = other_workspace.post(
+            "/api/fiscal-years",
+            json=make_year("FY2027", "2026-04-01", "2027-03-31"),
+        )
+        assert duplicate_code.status_code == 201
+
+
+def test_approval_rejection_requires_reason_and_can_be_resubmitted(test_client):
+    record = test_client.post(
+        "/api/modules/budgeting/records",
+        json={"name": "FY27 budget", "data": {"amount": 500}},
+    ).json()
+    submit = test_client.post(f"/api/modules/budgeting/records/{record['id']}/submit")
+    assert submit.status_code == 200
+
+    missing_reason = test_client.post(
+        f"/api/modules/budgeting/records/{record['id']}/review",
+        json={"action": "reject"},
+    )
+    assert missing_reason.status_code == 422
+    rejected = test_client.post(
+        f"/api/modules/budgeting/records/{record['id']}/review",
+        json={"action": "reject", "comment": "Please correct the forecast."},
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "Rejected"
+
+    updated = test_client.patch(
+        f"/api/modules/budgeting/records/{record['id']}",
+        json={"data": {"amount": 600}},
+    )
+    assert updated.status_code == 200
+    resubmitted = test_client.post(f"/api/modules/budgeting/records/{record['id']}/submit")
+    assert resubmitted.status_code == 200
+    approved = test_client.post(
+        f"/api/modules/budgeting/records/{record['id']}/review",
+        json={"action": "approve"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "Approved"
+    assert [event["action"] for event in test_client.get(
+        f"/api/modules/budgeting/records/{record['id']}/approvals"
+    ).json()] == ["submitted", "reject", "submitted", "approve"]
+
+
 def test_module_record_update_and_delete(test_client):
     created = test_client.post(
         "/api/modules/ap/records",
@@ -211,12 +340,17 @@ def test_module_record_update_and_delete(test_client):
     )
     record_id = created.json()["id"]
 
+    invalid_status_change = test_client.patch(
+        f"/api/modules/ap/records/{record_id}",
+        json={"status": "Approved"},
+    )
+    assert invalid_status_change.status_code == 422
     updated = test_client.patch(
         f"/api/modules/ap/records/{record_id}",
-        json={"status": "Approved", "data": {"amount": 750}},
+        json={"data": {"amount": 750}},
     )
     assert updated.status_code == 200
-    assert updated.json()["status"] == "Approved"
+    assert updated.json()["status"] == "Draft"
     assert updated.json()["data"]["amount"] == 750
 
     deleted = test_client.delete(f"/api/modules/ap/records/{record_id}")
@@ -266,6 +400,7 @@ def test_chart_of_accounts_rejects_duplicate_codes_and_locks_used_accounts(test_
             },
         },
     ).json()
+    approve_document(test_client, "journal-entry", journal["id"])
     assert test_client.post(f"/api/modules/journal-entry/records/{journal['id']}/post").status_code == 200
     assert test_client.patch(
         f"/api/modules/chart-of-accounts/records/{first['id']}",
@@ -304,6 +439,17 @@ def activate_test_year(client):
     return activated.json()
 
 
+def approve_document(client, module_id, record_id, reviewer=None):
+    submitted = client.post(f"/api/modules/{module_id}/records/{record_id}/submit")
+    assert submitted.status_code == 200
+    approved = (reviewer or client).post(
+        f"/api/modules/{module_id}/records/{record_id}/review",
+        json={"action": "approve"},
+    )
+    assert approved.status_code == 200
+    return approved.json()
+
+
 def test_draft_journal_does_not_affect_trial_balance_until_posted(test_client):
     activate_test_year(test_client)
     create_account(test_client, "5000", "Office expense", "Expense")
@@ -331,6 +477,7 @@ def test_draft_journal_does_not_affect_trial_balance_until_posted(test_client):
         for row in report["accounts"]
     )
 
+    approve_document(test_client, "journal-entry", created["id"])
     posted = test_client.post(f"/api/modules/journal-entry/records/{created['id']}/post")
     assert posted.status_code == 200
     assert posted.json()["status"] == "Posted"
@@ -370,6 +517,7 @@ def test_unbalanced_journal_is_rejected_without_creating_ledger_entries(test_cli
         },
     ).json()
 
+    approve_document(test_client, "journal-entry", created["id"])
     response = test_client.post(f"/api/modules/journal-entry/records/{created['id']}/post")
 
     assert response.status_code == 422
@@ -411,6 +559,8 @@ def test_ap_and_ar_posts_generate_balanced_control_account_lines(test_client):
         },
     ).json()
 
+    approve_document(test_client, "ap", ap["id"])
+    approve_document(test_client, "ar", ar["id"])
     assert test_client.post(f"/api/modules/ap/records/{ap['id']}/post").status_code == 200
     assert test_client.post(f"/api/modules/ar/records/{ar['id']}/post").status_code == 200
     report = test_client.get(
@@ -475,6 +625,8 @@ def test_gst_invoice_posting_and_summary_use_configured_tax_lines(test_client):
         },
     ).json()
 
+    approve_document(test_client, "ap", ap["id"])
+    approve_document(test_client, "ar", ar["id"])
     assert test_client.post(f"/api/modules/ap/records/{ap['id']}/post").status_code == 200
     assert test_client.post(f"/api/modules/ar/records/{ar['id']}/post").status_code == 200
     ledger = test_client.get("/api/accounting/general-ledger").json()
@@ -527,6 +679,8 @@ def test_ap_payment_and_ar_receipt_post_partial_balanced_ledger_entries(test_cli
             },
         },
     ).json()
+    approve_document(test_client, "ap", ap["id"])
+    approve_document(test_client, "ar", ar["id"])
     assert test_client.post(f"/api/modules/ap/records/{ap['id']}/post").status_code == 200
     assert test_client.post(f"/api/modules/ar/records/{ar['id']}/post").status_code == 200
 
@@ -662,6 +816,7 @@ def test_invoice_payment_requires_posted_invoice_active_cash_account_and_open_pe
         json=payment_payload,
     ).status_code == 409
 
+    approve_document(test_client, "ap", invoice["id"])
     assert test_client.post(f"/api/modules/ap/records/{invoice['id']}/post").status_code == 200
     assert test_client.post(f"/api/modules/ap/records/{invoice['id']}/payments", json={
         **payment_payload,
@@ -686,7 +841,6 @@ def test_budget_variance_and_financial_statements_use_posted_entries(test_client
         "/api/modules/budgeting/records",
         json={
             "name": "Office expense budget",
-            "status": "Approved",
             "data": {
                 "account_code": "5000",
                 "start_date": "2026-04-01",
@@ -696,6 +850,7 @@ def test_budget_variance_and_financial_statements_use_posted_entries(test_client
         },
     )
     assert budget.status_code == 201
+    approve_document(test_client, "budgeting", budget.json()["id"])
     opening = test_client.post(
         "/api/modules/journal-entry/records",
         json={
@@ -710,6 +865,7 @@ def test_budget_variance_and_financial_statements_use_posted_entries(test_client
             },
         },
     ).json()
+    approve_document(test_client, "journal-entry", opening["id"])
     assert test_client.post(f"/api/modules/journal-entry/records/{opening['id']}/post").status_code == 200
     journal = test_client.post(
         "/api/modules/journal-entry/records",
@@ -725,6 +881,7 @@ def test_budget_variance_and_financial_statements_use_posted_entries(test_client
             },
         },
     ).json()
+    approve_document(test_client, "journal-entry", journal["id"])
     assert test_client.post(f"/api/modules/journal-entry/records/{journal['id']}/post").status_code == 200
 
     variance = test_client.get("/api/accounting/budget-variance").json()
@@ -767,6 +924,7 @@ def test_fixed_asset_acquisition_and_sequential_straight_line_depreciation(test_
             },
         },
     ).json()
+    approve_document(test_client, "fixed-assets", asset["id"])
     acquired = test_client.post(
         f"/api/modules/fixed-assets/records/{asset['id']}/post-acquisition"
     )
@@ -826,6 +984,7 @@ def test_dashboard_counts_and_recent_transactions_come_from_workspace_data(test_
             },
         },
     ).json()
+    approve_document(test_client, "journal-entry", posted["id"])
     assert test_client.post(f"/api/modules/journal-entry/records/{posted['id']}/post").status_code == 200
 
     dashboard = test_client.get("/api/accounting/dashboard-summary?period=This Year").json()
@@ -863,6 +1022,7 @@ def test_closed_fiscal_period_rejects_journal_posting(test_client):
         },
     ).json()
 
+    approve_document(test_client, "journal-entry", record["id"])
     response = test_client.post(f"/api/modules/journal-entry/records/{record['id']}/post")
     assert response.status_code == 409
 
