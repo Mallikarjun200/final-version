@@ -644,6 +644,19 @@ def test_gst_invoice_posting_and_summary_use_configured_tax_lines(test_client):
         ("output", 18000),
     }
     assert all(row["taxable_minor"] == 100000 for row in summary)
+    input_summary = test_client.get(
+        "/api/accounting/gst-summary?start_date=2026-04-11&end_date=2026-04-11"
+    )
+    assert input_summary.status_code == 200
+    assert [(row["direction"], row["tax_minor"]) for row in input_summary.json()] == [("input", 18000)]
+    output_summary = test_client.get(
+        "/api/accounting/gst-summary?start_date=2026-04-12&end_date=2026-04-12"
+    )
+    assert output_summary.status_code == 200
+    assert [(row["direction"], row["tax_minor"]) for row in output_summary.json()] == [("output", 18000)]
+    assert test_client.get(
+        "/api/accounting/gst-summary?start_date=2026-04-13&end_date=2026-04-12"
+    ).status_code == 422
 
 
 def test_ap_payment_and_ar_receipt_post_partial_balanced_ledger_entries(test_client):
@@ -942,6 +955,19 @@ def test_fixed_asset_acquisition_and_sequential_straight_line_depreciation(test_
         f"/api/modules/fixed-assets/records/{asset['id']}/depreciate?period_end=2026-06-30"
     )
     assert next_month.status_code == 200
+    schedule = test_client.get(
+        f"/api/modules/fixed-assets/records/{asset['id']}/depreciation-schedule"
+    )
+    assert schedule.status_code == 200
+    assert schedule.json()["cost_minor"] == 120000
+    assert schedule.json()["monthly_depreciation_minor"] == 10000
+    assert schedule.json()["accumulated_depreciation_minor"] == 20000
+    assert schedule.json()["net_book_value_minor"] == 100000
+    assert schedule.json()["next_period_end"] == "2026-07-31"
+    assert [period["period_end"] for period in schedule.json()["posted_periods"]] == [
+        "2026-05-31",
+        "2026-06-30",
+    ]
     ledger = test_client.get("/api/accounting/general-ledger").json()
     depreciation_lines = [entry for entry in ledger if entry["document_no"].startswith("DEP-EQ-1")]
     assert sum(entry["debit_minor"] for entry in depreciation_lines) == 20000

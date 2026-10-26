@@ -123,11 +123,6 @@ export default function Topbar({
         {activeWorkspace?.role === 'admin' && (
           <button className="workspace-members-btn" onClick={() => { setShowMembers(true); setMemberNotice(''); loadMembers() }}>Manage access</button>
         )}
-        <span className="chip-sample" title="This screen shows demo figures">
-          <Icon name="FlaskConical" size={14} />
-          Sample data
-        </span>
-
         <button className="icon-btn bell" aria-label="Notifications, 9 unread">
           <Icon name="Bell" size={19} />
           <span className="bell-badge">9</span>

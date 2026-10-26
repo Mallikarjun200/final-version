@@ -524,6 +524,26 @@ class BudgetVarianceOut(BaseModel):
     variance_minor: int
 
 
+class FixedAssetDepreciationPeriodOut(BaseModel):
+    period_end: date
+    document_no: str
+    amount_minor: int
+
+
+class FixedAssetScheduleOut(BaseModel):
+    record_id: int
+    asset_name: str
+    acquisition_date: date
+    cost_minor: int
+    salvage_minor: int
+    useful_life_months: int
+    monthly_depreciation_minor: int
+    accumulated_depreciation_minor: int
+    net_book_value_minor: int
+    next_period_end: date | None
+    posted_periods: list[FixedAssetDepreciationPeriodOut]
+
+
 class FiscalPeriodDetailOut(BaseModel):
     id: int
     fiscal_year_id: int
@@ -2415,6 +2435,99 @@ def depreciate_fixed_asset(
     return record
 
 
+@app.get(
+    "/api/modules/fixed-assets/records/{record_id}/depreciation-schedule",
+    response_model=FixedAssetScheduleOut,
+)
+def fixed_asset_depreciation_schedule(
+    record_id: int,
+    user: WorkspaceUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    record = db.scalar(
+        select(ModuleRecord).where(
+            ModuleRecord.id == record_id,
+            ModuleRecord.owner_id == user.id,
+            ModuleRecord.module_id == "fixed-assets",
+        )
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Fixed asset not found.")
+    if record.status != "Active":
+        raise HTTPException(status_code=409, detail="Post the asset acquisition before viewing its depreciation schedule.")
+
+    acquisition_date = parse_posting_date(record.data.get("acquisition_date"))
+    cost_minor = amount_to_minor(record.data.get("cost"))
+    salvage_minor = amount_to_minor(record.data.get("salvage_value", 0))
+    try:
+        useful_life = Decimal(str(record.data.get("useful_life_years")))
+    except (InvalidOperation, ValueError):
+        raise HTTPException(status_code=422, detail="Useful life must be a positive whole number of years.")
+    if not useful_life.is_finite() or useful_life <= 0 or useful_life != useful_life.to_integral_value():
+        raise HTTPException(status_code=422, detail="Useful life must be a positive whole number of years.")
+    if salvage_minor > cost_minor:
+        raise HTTPException(status_code=422, detail="Salvage value cannot exceed asset cost.")
+    useful_life_months = int(useful_life) * 12
+    depreciable_minor = cost_minor - salvage_minor
+    monthly_base, extra_minor = divmod(depreciable_minor, useful_life_months)
+
+    ledger_entries = db.scalars(
+        select(LedgerEntry)
+        .where(
+            LedgerEntry.owner_id == user.id,
+            LedgerEntry.source_module == "fixed-assets",
+            LedgerEntry.source_record_id == record.id,
+            LedgerEntry.line_number >= 3,
+        )
+        .order_by(LedgerEntry.line_number)
+    ).all()
+    if len(ledger_entries) % 2:
+        raise HTTPException(status_code=409, detail="Existing depreciation entries are incomplete; contact an administrator.")
+
+    posted_periods: list[FixedAssetDepreciationPeriodOut] = []
+    for index in range(0, len(ledger_entries), 2):
+        expense_line, accumulated_line = ledger_entries[index:index + 2]
+        if (
+            expense_line.posting_date != accumulated_line.posting_date
+            or expense_line.debit_minor != accumulated_line.credit_minor
+        ):
+            raise HTTPException(status_code=409, detail="Existing depreciation entries are inconsistent; contact an administrator.")
+        posted_periods.append(
+            FixedAssetDepreciationPeriodOut(
+                period_end=expense_line.posting_date,
+                document_no=expense_line.document_no,
+                amount_minor=expense_line.debit_minor,
+            )
+        )
+
+    accumulated_minor = sum(period.amount_minor for period in posted_periods)
+    net_book_value_minor = max(cost_minor - accumulated_minor, salvage_minor)
+    next_period_end = None
+    if len(posted_periods) < useful_life_months and net_book_value_minor > salvage_minor:
+        next_month_index = acquisition_date.year * 12 + acquisition_date.month - 1 + len(posted_periods) + 1
+        next_year, zero_based_month = divmod(next_month_index, 12)
+        next_month = zero_based_month + 1
+        next_period_end = date(
+            next_year,
+            next_month,
+            calendar.monthrange(next_year, next_month)[1],
+        )
+
+    return FixedAssetScheduleOut(
+        record_id=record.id,
+        asset_name=record.name,
+        acquisition_date=acquisition_date,
+        cost_minor=cost_minor,
+        salvage_minor=salvage_minor,
+        useful_life_months=useful_life_months,
+        monthly_depreciation_minor=monthly_base + (1 if extra_minor else 0),
+        accumulated_depreciation_minor=accumulated_minor,
+        net_book_value_minor=net_book_value_minor,
+        next_period_end=next_period_end,
+        posted_periods=posted_periods,
+    )
+
+
 @app.get("/api/accounting/trial-balance", response_model=TrialBalanceOut)
 def trial_balance(
     start_date: date | None = Query(default=None),
@@ -2634,9 +2747,13 @@ def financial_report(
 
 @app.get("/api/accounting/gst-summary")
 def gst_summary(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
     user: WorkspaceUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(status_code=422, detail="End date must be on or after start date.")
     invoices = db.scalars(
         select(ModuleRecord).where(
             ModuleRecord.owner_id == user.id,
@@ -2647,6 +2764,12 @@ def gst_summary(
     totals: dict[tuple[str, str, str], dict[str, int]] = {}
     for invoice in invoices:
         data = invoice.data
+        if start_date or end_date:
+            invoice_date = parse_posting_date(data.get("invoice_date"))
+            if start_date and invoice_date < start_date:
+                continue
+            if end_date and invoice_date > end_date:
+                continue
         tax_minor = data.get("tax_amount_minor", 0)
         if not isinstance(tax_minor, int) or tax_minor <= 0:
             continue
