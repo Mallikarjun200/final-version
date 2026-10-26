@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import Topbar from './components/Topbar.jsx'
+import FicoModuleNav from './components/FicoModuleNav.jsx'
 import FicoDashboard from './pages/FicoDashboard.jsx'
 import ComingSoon from './pages/ComingSoon.jsx'
 import Login from './pages/Login.jsx'
@@ -152,7 +153,10 @@ function App() {
           onLogout={logout}
           logoutError={logoutError}
         />
-        <main className="app-content" key={activeWorkspaceId}>{content}</main>
+        <main className="app-content" key={activeWorkspaceId}>
+          {page !== 'home' && <FicoModuleNav page={page} onNavigate={navigate} />}
+          {content}
+        </main>
       </div>
     </div>
   )
