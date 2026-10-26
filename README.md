@@ -33,6 +33,16 @@ Open the app and choose **Create an account** on the login page. Passwords are s
 
 Company, Fiscal Period, Chart of Accounts, Journal Entry, General Ledger, Accounts Payable, Accounts Receivable, Fixed Assets, Budgeting, GST, and Financial Reports have account-scoped create, view, edit, and delete records. Fiscal Year retains its calendar validation and automatic period creation. Trial Balance remains a sample-data report. The generic module records are persistent CRUD workspaces, not a substitute for accounting posting, tax, payment, or financial-statement calculations; those workflows require agreed business rules.
 
+## Deploy to Render
+
+The root `render.yaml` defines the combined web service and a persistent PostgreSQL database. The web service uses Render's free plan and may sleep when idle; the database uses Render's paid `basic-256mb` plan and requires billing approval.
+
+1. Push this repository to GitHub and open the [Render Blueprint deployment page](https://render.com/deploy).
+2. Connect `Mallikarjun200/final-version` and select the Blueprint in the repository root.
+3. Review the PostgreSQL plan and any charges, then approve deployment.
+4. Wait for the `stackly-oneerp` service health check to pass. Render will show its shareable `https://stackly-oneerp.onrender.com` URL in the service dashboard.
+5. Create your account from that URL. Do not use the local SQLite database for hosted production data.
+
 ## Fiscal-year workflow
 
 1. Create a fiscal year for a company code using either the April–March or January–December calendar.
